@@ -1,0 +1,56 @@
+name: tabular-space
+purpose: Reusable family for sparse coordinate-based tables and workbooks.
+
+keywords:
+  - workbook
+  - worksheet
+  - cell
+  - range
+  - row
+  - column
+  - formula
+
+structure:
+  root_object:
+    kind: workbook_like
+    parts:
+      - sheet_like
+  sheet_like:
+    parts:
+      - cell_like
+      - range_like
+
+relations:
+  - verb: contains
+    source: workbook_like
+    target: sheet_like
+  - verb: contains
+    source: sheet_like
+    target: cell_like
+  - verb: covers
+    source: range_like
+    target: cell_like
+
+views:
+  - grid-view
+  - dependency-view
+
+actions:
+  - set-cell
+  - clear-cell
+  - inspect-range
+
+invariants:
+  - cell coordinates are unique within a sheet
+  - ranges resolve against a sheet coordinate space
+
+capabilities:
+  baseline:
+    - sparse cell read
+    - sparse cell write
+
+loss_boundary:
+  typical:
+    - formatting
+    - chart presentation
+    - comments

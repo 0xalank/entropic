@@ -1,0 +1,133 @@
+name: document
+purpose: Hierarchical definition for linear text documents with embedded structure.
+
+extends:
+  - linear-text
+
+keywords:
+  - document
+  - section
+  - paragraph
+  - run
+  - list
+  - table
+  - heading
+  - note
+  - style
+
+structure:
+  root_object:
+    kind: document
+    parts:
+      - section
+      - paragraph
+      - table
+      - image
+  section:
+    parts:
+      - heading
+      - paragraph
+      - list
+      - table
+  paragraph:
+    parts:
+      - run
+
+relations:
+  - verb: contains
+    source: document
+    target: section_or_paragraph
+  - verb: follows
+    source: block
+    target: block
+  - verb: refines
+    source: run
+    target: paragraph
+  - verb: annotates
+    source: note
+    target: block_or_range
+
+views:
+  - identity: reading-view
+    focus: block order
+    rendering_intent: human reading
+  - identity: outline-view
+    focus: sections and headings
+    rendering_intent: structural planning
+  - identity: semantic-view
+    focus: blocks, lists, tables, annotations
+    rendering_intent: agent reasoning
+
+actions:
+  - identity: replace-paragraph
+    verb: replace
+    operands: [paragraph, text]
+  - identity: insert-paragraph
+    verb: insert
+    operands: [position, text]
+  - identity: create-heading
+    verb: create
+    operands: [level, text]
+  - identity: create-list
+    verb: create
+    operands: [items]
+  - identity: create-table
+    verb: create
+    operands: [rows, columns]
+
+invariants:
+  - identity: block-order-is-stable
+    statement: Blocks appear in a meaningful sequence.
+  - identity: section-nesting-is-well-formed
+    statement: Heading depth should define a coherent outline.
+
+capabilities:
+  ideal:
+    read:
+      - section
+      - paragraph
+      - run
+      - list
+      - table
+      - note
+      - style
+    write:
+      - all text blocks
+      - table semantics
+      - list semantics
+      - style semantics
+  current_entropic_office:
+    read:
+      - paragraph text
+    write:
+      - paragraph text
+    missing:
+      - explicit list model
+      - explicit heading model
+      - explicit table model
+      - explicit run/style model
+
+loss_boundary:
+  preserved_but_not_fully_described:
+    - rich formatting
+    - tables
+    - comments
+    - headers and footers
+    - images and anchored layout
+
+instance_shape:
+  canonical:
+    kind: document
+    object:
+      document:
+        blocks:
+          - kind: heading
+            level: 1
+            text: Project Plan
+          - kind: paragraph
+            text: This is the opening paragraph.
+          - kind: list
+            ordered: false
+            items:
+              - text: First task
+              - text: Second task

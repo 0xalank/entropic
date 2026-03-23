@@ -1,0 +1,129 @@
+name: presentation
+purpose: Hierarchical definition for slide-based visual communication objects.
+
+extends:
+  - slide-space
+  - graphics-scene
+
+keywords:
+  - deck
+  - slide
+  - layout
+  - frame
+  - shape
+  - text_box
+  - image
+  - chart
+  - notes
+  - theme
+
+structure:
+  root_object:
+    kind: deck
+    parts:
+      - slide
+      - theme
+      - master
+  slide:
+    parts:
+      - title
+      - body
+      - frame
+      - shape
+      - image
+      - chart
+      - notes
+
+relations:
+  - verb: contains
+    source: deck
+    target: slide
+  - verb: uses
+    source: slide
+    target: layout_or_theme
+  - verb: positions
+    source: frame
+    target: shape_or_text_or_image
+  - verb: visualizes
+    source: chart
+    target: data_source
+
+views:
+  - identity: slide-view
+    focus: one slide at a time
+    rendering_intent: editing and presentation
+  - identity: outline-view
+    focus: slide titles and notes
+    rendering_intent: planning
+  - identity: scene-view
+    focus: positioned objects inside a slide
+    rendering_intent: geometry-aware editing
+
+actions:
+  - identity: create-slide
+    verb: create
+    operands: [position, layout]
+  - identity: set-title
+    verb: set
+    operands: [slide, text]
+  - identity: set-body
+    verb: set
+    operands: [slide, rich_text_or_bullets]
+  - identity: place-image
+    verb: place
+    operands: [slide, image, frame]
+  - identity: place-chart
+    verb: place
+    operands: [slide, chart, frame]
+
+invariants:
+  - identity: slide-order-is-stable
+    statement: Slides have a meaningful sequence.
+  - identity: positioned-parts-belong-to-a-slide
+    statement: Frames and visible objects must resolve to a containing slide.
+
+capabilities:
+  ideal:
+    read:
+      - slide structure
+      - positioned objects
+      - notes
+      - theme
+      - chart semantics
+    write:
+      - slide structure
+      - positioned objects
+      - notes
+      - charts
+      - layouts
+  current_entropic_office:
+    read:
+      - visual editing through ONLYOFFICE
+    write:
+      - visual editing through ONLYOFFICE
+    missing:
+      - structured entropic-office automation
+      - explicit slide object schema in runtime automation
+
+loss_boundary:
+  preserved_but_not_fully_described:
+    - animations
+    - transitions
+    - master slide internals
+    - advanced theme semantics
+    - embedded media timing
+
+instance_shape:
+  canonical:
+    kind: presentation
+    object:
+      deck:
+        slides:
+          - identity: slide-1
+            title: Dog Breeds
+            body:
+              bullets:
+                - Labrador Retriever
+                - German Shepherd
+            notes:
+              - Mention origin and temperament.

@@ -1,0 +1,53 @@
+name: linear-text
+purpose: Reusable family for ordered text documents composed from blocks and inline runs.
+
+keywords:
+  - document
+  - block
+  - section
+  - paragraph
+  - run
+  - list
+  - heading
+  - table
+
+structure:
+  root_object:
+    kind: document_like
+    parts:
+      - block_like
+  block_like:
+    parts:
+      - run_like
+
+relations:
+  - verb: follows
+    source: block_like
+    target: block_like
+  - verb: contains
+    source: document_like
+    target: block_like
+
+views:
+  - reading-view
+  - outline-view
+
+actions:
+  - replace-block
+  - insert-block
+  - remove-block
+
+invariants:
+  - block order is meaningful
+  - inline runs belong to a containing block
+
+capabilities:
+  baseline:
+    - block read
+    - block write
+
+loss_boundary:
+  typical:
+    - rich style runs
+    - layout anchors
+    - comments

@@ -245,6 +245,23 @@ pub fn run() {
             commands::read_workspace_file_base64,
             commands::delete_workspace_file,
             commands::upload_workspace_file,
+            commands::get_onlyoffice_status,
+            commands::ensure_onlyoffice_ready,
+            commands::list_share_contacts,
+            commands::save_share_contact,
+            commands::delete_share_contact,
+            commands::list_shared_workspace_folders,
+            commands::get_shared_workspace_folder,
+            commands::save_shared_workspace_folder,
+            commands::delete_shared_workspace_folder,
+            commands::generate_share_contact_invite,
+            commands::import_share_contact_invite,
+            commands::accept_syncthing_incoming_folder_offer,
+            commands::reject_syncthing_incoming_folder_offer,
+            commands::get_syncthing_share_status,
+            commands::sync_syncthing_shares,
+            commands::rescan_shared_workspace_folder,
+            commands::list_shared_workspace_folder_conflicts,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|error| {

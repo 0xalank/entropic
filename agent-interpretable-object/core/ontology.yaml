@@ -1,0 +1,96 @@
+name: core-ontology
+purpose: >
+  Shared semantic grammar for all agent-interpretable object kinds.
+
+primitive_forms:
+  object:
+    description: A semantic whole.
+    fields:
+      - identity
+      - label
+      - parts
+      - relations
+      - views
+      - actions
+
+  part:
+    description: A contained semantic unit.
+    fields:
+      - identity
+      - kind
+      - slot
+      - attributes
+      - parts
+
+  relation:
+    description: A meaningful directed edge.
+    fields:
+      - identity
+      - verb
+      - source
+      - target
+      - semantics
+
+  view:
+    description: A useful projection over the same object.
+    fields:
+      - identity
+      - focus
+      - visible_parts
+      - omitted_parts
+      - rendering_intent
+
+  action:
+    description: A valid operation over the object.
+    fields:
+      - identity
+      - verb
+      - operands
+      - preconditions
+      - effects
+
+  invariant:
+    description: A truth that should remain valid.
+    fields:
+      - identity
+      - statement
+
+  capability:
+    description: A supported behavior for a realization.
+    fields:
+      - identity
+      - mode
+      - scope
+
+canonical_definition_shape:
+  required:
+    - name
+    - purpose
+    - keywords
+    - structure
+    - relations
+    - views
+    - actions
+    - invariants
+    - capabilities
+    - loss_boundary
+
+composition_rules:
+  - A kind may extend one or more families.
+  - A kind should define objects first, then relations, then views, then actions.
+  - A realization may support only a subset of actions, but should still preserve unknown structure when possible.
+  - A projection should never redefine the underlying object; it only reveals part of it.
+
+instance_guidance:
+  - Prefer sparse structure over materializing empty space.
+  - Prefer named relations over implicit meaning.
+  - Prefer explicit capabilities and loss boundaries over pretending full fidelity.
+  - Use stable identifiers where the underlying format exposes them.
+
+realization_model:
+  entropic-office:
+    role: Structured automation shim.
+    strength: Direct agent-readable manipulation of semantic structure.
+  onlyoffice:
+    role: Visual editor realization.
+    strength: Rich user editing of native office formats.

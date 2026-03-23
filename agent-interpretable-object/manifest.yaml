@@ -1,0 +1,43 @@
+name: agent-interpretable-object
+purpose: >
+  Direct definition set for agent-readable object semantics. This folder is the
+  source of truth for shared vocabulary and concrete object-kind definitions.
+
+entrypoint:
+  read_order:
+    - README.md
+    - core/keywords.yaml
+    - core/ontology.yaml
+    - core/canonical-instance.yaml
+    - families/tabular-space.yaml
+    - families/linear-text.yaml
+    - families/slide-space.yaml
+    - kinds/spreadsheet.yaml
+    - kinds/document.yaml
+    - kinds/presentation.yaml
+    - families/graphics-scene.md
+
+root_terms:
+  - object
+  - part
+  - relation
+  - view
+  - action
+  - invariant
+  - capability
+  - loss_boundary
+  - family
+  - realization
+
+kinds:
+  - spreadsheet
+  - document
+  - presentation
+
+future_families:
+  - graphics-scene
+
+notes:
+  - No versioned JSON schema layer is assumed here.
+  - Definitions are intended to be read directly by humans and agents.
+  - New kinds should reuse the shared keywords and ontology rather than inventing unrelated fields.

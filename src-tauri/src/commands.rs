@@ -9,14 +9,14 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
     Engine as _,
 };
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use futures_util::{SinkExt, StreamExt};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 #[cfg(target_os = "macos")]
@@ -34,7 +34,7 @@ use tauri::{
 };
 use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -3538,6 +3538,187 @@ pub struct DesktopSettingsSnapshot {
     pub desktop_custom_wallpaper: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareContact {
+    pub id: String,
+    pub display_name: String,
+    pub syncthing_device_id: Option<String>,
+    pub gateway_device_id: Option<String>,
+    pub gateway_public_key: Option<String>,
+    pub invite_state: String,
+    pub last_seen_at: Option<u64>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedFolderMember {
+    pub contact_id: String,
+    pub added_at: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedWorkspaceFolder {
+    pub id: String,
+    pub path: String,
+    pub title: String,
+    pub members: Vec<SharedFolderMember>,
+    #[serde(default = "default_shared_folder_direction")]
+    pub direction: String,
+    #[serde(default)]
+    pub syncthing_folder_id: Option<String>,
+    pub sync_status: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncthingShareContactStatus {
+    pub contact_id: String,
+    pub display_name: String,
+    pub device_id: Option<String>,
+    pub invite_state: String,
+    pub status: String,
+    pub configured: bool,
+    pub connected: bool,
+    pub address: Option<String>,
+    pub connection_type: Option<String>,
+    pub last_seen: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncthingSharedFolderStatus {
+    pub share_id: String,
+    pub path: String,
+    pub title: String,
+    pub status: String,
+    pub state: Option<String>,
+    pub configured_member_count: usize,
+    pub connected_member_count: usize,
+    pub need_items: u64,
+    pub need_bytes: u64,
+    pub pull_errors: usize,
+    pub last_scan: Option<String>,
+    pub last_file_at: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncthingShareStatusSnapshot {
+    pub running: bool,
+    pub ready: bool,
+    pub local_device_id: Option<String>,
+    pub version: Option<String>,
+    pub gui_url: String,
+    pub warning: Option<String>,
+    pub error: Option<String>,
+    pub contacts: Vec<SyncthingShareContactStatus>,
+    pub folders: Vec<SyncthingSharedFolderStatus>,
+    pub incoming_offers: Vec<SyncthingIncomingFolderOffer>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlyOfficeStatus {
+    pub running: bool,
+    pub ready: bool,
+    pub public_url: String,
+    pub image: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncthingFolderConflict {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncthingIncomingFolderPeer {
+    pub device_id: String,
+    pub contact_id: Option<String>,
+    pub display_name: String,
+    pub offered_at: Option<String>,
+    pub connected: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncthingIncomingFolderOffer {
+    pub folder_id: String,
+    pub label: String,
+    pub target_path: String,
+    pub status: String,
+    pub receive_encrypted: bool,
+    pub remote_encrypted: bool,
+    pub peers: Vec<SyncthingIncomingFolderPeer>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptedSyncthingIncomingFolder {
+    pub folder_id: String,
+    pub label: String,
+    pub path: String,
+    pub snapshot: SyncthingShareStatusSnapshot,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShareContactInvitePayload {
+    version: u8,
+    kind: String,
+    display_name: String,
+    syncthing_device_id: String,
+    gateway_device_id: String,
+    gateway_public_key: String,
+    created_at: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShareContactInviteEnvelope {
+    payload: ShareContactInvitePayload,
+    signature: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareContactInvite {
+    pub token: String,
+    pub display_name: String,
+    pub syncthing_device_id: String,
+    pub gateway_device_id: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct StoredShareRegistry {
+    version: u8,
+    contacts: Vec<ShareContact>,
+    folders: Vec<SharedWorkspaceFolder>,
+}
+
+impl Default for StoredShareRegistry {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            contacts: Vec::new(),
+            folders: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppBootstrapState {
@@ -3949,6 +4130,21 @@ const OPENCLAW_DATA_VOLUME: &str = "entropic-openclaw-data";
 const LEGACY_OPENCLAW_DATA_VOLUME: &str = "nova-openclaw-data";
 const SCANNER_CONTAINER: &str = "entropic-skill-scanner";
 const SCANNER_HOST_PORT: &str = "19791";
+const SYNCTHING_CONTAINER: &str = "entropic-syncthing";
+const SYNCTHING_DEFAULT_IMAGE: &str = "syncthing/syncthing:latest";
+const SYNCTHING_GUI_PORT: &str = "8384";
+const SYNCTHING_GUI_HOST_PORT: &str = "19793";
+const SYNCTHING_SYNC_PORT: &str = "22000";
+const SYNCTHING_DISCOVERY_PORT: &str = "21027";
+const SYNCTHING_MANAGED_FOLDER_PREFIX: &str = "entropic-share-";
+const ONLYOFFICE_CONTAINER: &str = "entropic-onlyoffice";
+const ONLYOFFICE_DEFAULT_IMAGE: &str = "onlyoffice/documentserver:latest";
+const ONLYOFFICE_HOST_PORT: &str = "19794";
+const ONLYOFFICE_HTTP_PORT: &str = "80";
+const ONLYOFFICE_BRIDGE_PORT: &str = "19796";
+const ONLYOFFICE_PUBLIC_BASE_URL: &str = "/__onlyoffice_proxy__";
+const ONLYOFFICE_INTERNAL_BASE_URL: &str = "http://entropic-openclaw:19791";
+const ONLYOFFICE_UPSTREAM_BASE_URL: &str = "http://entropic-onlyoffice";
 const ENTROPIC_GATEWAY_SCHEMA_VERSION: &str = "2026-02-13";
 const OPENCLAW_STATE_ROOT: &str = "/home/node/.openclaw";
 const OPENCLAW_PERSISTED_CONFIG_PATH: &str = "/data/openclaw.persisted.json";
@@ -3973,6 +4169,8 @@ const MANAGED_PLUGIN_IDS: &[&str] = &[
 ];
 static GATEWAY_START_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
 static APPLIED_AGENT_SETTINGS_FINGERPRINT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static SYNCTHING_SYNC_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+static ONLYOFFICE_BRIDGE_START_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
 
 fn gateway_start_lock() -> &'static AsyncMutex<()> {
     GATEWAY_START_LOCK.get_or_init(|| AsyncMutex::new(()))
@@ -3980,6 +4178,14 @@ fn gateway_start_lock() -> &'static AsyncMutex<()> {
 
 fn applied_agent_settings_fingerprint() -> &'static Mutex<Option<String>> {
     APPLIED_AGENT_SETTINGS_FINGERPRINT.get_or_init(|| Mutex::new(None))
+}
+
+fn syncthing_sync_lock() -> &'static AsyncMutex<()> {
+    SYNCTHING_SYNC_LOCK.get_or_init(|| AsyncMutex::new(()))
+}
+
+fn onlyoffice_bridge_start_lock() -> &'static AsyncMutex<()> {
+    ONLYOFFICE_BRIDGE_START_LOCK.get_or_init(|| AsyncMutex::new(()))
 }
 
 fn clear_applied_agent_settings_fingerprint() -> Result<(), String> {
@@ -4671,6 +4877,1674 @@ fn start_scanner_sidecar() {
 
 fn stop_scanner_sidecar() {
     let _ = docker_command().args(["stop", SCANNER_CONTAINER]).output();
+}
+
+fn syncthing_image_name() -> String {
+    std::env::var("ENTROPIC_SYNCTHING_IMAGE")
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+        .unwrap_or_else(|| SYNCTHING_DEFAULT_IMAGE.to_string())
+}
+
+fn syncthing_container_image() -> Option<String> {
+    let output = docker_command()
+        .args([
+            "container",
+            "inspect",
+            SYNCTHING_CONTAINER,
+            "--format",
+            "{{.Config.Image}}",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let image = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if image.is_empty() {
+        None
+    } else {
+        Some(image)
+    }
+}
+
+fn onlyoffice_image_name() -> String {
+    std::env::var("ENTROPIC_ONLYOFFICE_IMAGE")
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+        .unwrap_or_else(|| ONLYOFFICE_DEFAULT_IMAGE.to_string())
+}
+
+fn onlyoffice_container_image() -> Option<String> {
+    let output = docker_command()
+        .args([
+            "container",
+            "inspect",
+            ONLYOFFICE_CONTAINER,
+            "--format",
+            "{{.Config.Image}}",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let image = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if image.is_empty() {
+        None
+    } else {
+        Some(image)
+    }
+}
+
+fn onlyoffice_jwt_secret_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
+    fs::create_dir_all(&app_dir).map_err(|e| format!("Failed to create app data dir: {}", e))?;
+    Ok(app_dir.join("onlyoffice-jwt-secret.txt"))
+}
+
+fn load_or_create_onlyoffice_jwt_secret(app: &AppHandle) -> Result<String, String> {
+    let path = onlyoffice_jwt_secret_path(app)?;
+    if path.exists() {
+        let existing = fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read ONLYOFFICE JWT secret: {}", e))?;
+        let trimmed = existing.trim().to_string();
+        if !trimmed.is_empty() {
+            return Ok(trimmed);
+        }
+    }
+
+    let mut secret_bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut secret_bytes);
+    let secret = URL_SAFE_NO_PAD.encode(secret_bytes);
+    fs::write(&path, format!("{}\n", secret))
+        .map_err(|e| format!("Failed to persist ONLYOFFICE JWT secret: {}", e))?;
+    Ok(secret)
+}
+
+const ONLYOFFICE_HOST_HTML: &str =
+    include_str!("../../openclaw-runtime/browser-service/onlyoffice-host.html");
+const ONLYOFFICE_URL_TOKEN_TTL_SECS: u64 = 15 * 60;
+
+#[derive(Debug, Clone, Copy)]
+struct OnlyOfficeFileSpec {
+    document_type: &'static str,
+    file_type: &'static str,
+    content_type: &'static str,
+}
+
+#[derive(Debug)]
+struct OnlyOfficeBridgeRequest {
+    method: String,
+    target: String,
+    body: Vec<u8>,
+}
+
+fn onlyoffice_bridge_local_origin() -> String {
+    format!("http://127.0.0.1:{}", ONLYOFFICE_BRIDGE_PORT)
+}
+
+fn onlyoffice_bridge_container_origin() -> String {
+    format!("http://host.docker.internal:{}", ONLYOFFICE_BRIDGE_PORT)
+}
+
+fn onlyoffice_document_server_origin() -> String {
+    format!("http://127.0.0.1:{}", ONLYOFFICE_HOST_PORT)
+}
+
+fn onlyoffice_file_spec_for_path(path: &str) -> Result<OnlyOfficeFileSpec, String> {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "docx" => Ok(OnlyOfficeFileSpec {
+            document_type: "word",
+            file_type: "docx",
+            content_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }),
+        "xlsx" => Ok(OnlyOfficeFileSpec {
+            document_type: "cell",
+            file_type: "xlsx",
+            content_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }),
+        "pptx" => Ok(OnlyOfficeFileSpec {
+            document_type: "slide",
+            file_type: "pptx",
+            content_type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        }),
+        _ => Err("This office file type is not supported by ONLYOFFICE in Entropic yet.".to_string()),
+    }
+}
+
+fn onlyoffice_jwt_payload_bytes(payload: &serde_json::Value) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(payload).map_err(|e| format!("Failed to encode ONLYOFFICE token payload: {}", e))
+}
+
+fn hmac_sha256_bytes(key: &[u8], data: &[u8]) -> [u8; 32] {
+    const BLOCK_SIZE: usize = 64;
+    let mut normalized_key = [0u8; BLOCK_SIZE];
+    if key.len() > BLOCK_SIZE {
+        let digest = Sha256::digest(key);
+        normalized_key[..digest.len()].copy_from_slice(&digest);
+    } else {
+        normalized_key[..key.len()].copy_from_slice(key);
+    }
+
+    let mut inner_pad = [0x36u8; BLOCK_SIZE];
+    let mut outer_pad = [0x5cu8; BLOCK_SIZE];
+    for index in 0..BLOCK_SIZE {
+        inner_pad[index] ^= normalized_key[index];
+        outer_pad[index] ^= normalized_key[index];
+    }
+
+    let inner_hash = Sha256::new()
+        .chain_update(inner_pad)
+        .chain_update(data)
+        .finalize();
+    let outer_hash = Sha256::new()
+        .chain_update(outer_pad)
+        .chain_update(inner_hash)
+        .finalize();
+    let mut output = [0u8; 32];
+    output.copy_from_slice(&outer_hash);
+    output
+}
+
+fn sign_onlyoffice_jwt(secret: &str, payload: &serde_json::Value) -> Result<String, String> {
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+    let body = URL_SAFE_NO_PAD.encode(onlyoffice_jwt_payload_bytes(payload)?);
+    let signing_input = format!("{}.{}", header, body);
+    let signature = URL_SAFE_NO_PAD.encode(hmac_sha256_bytes(
+        secret.as_bytes(),
+        signing_input.as_bytes(),
+    ));
+    Ok(format!("{}.{}", signing_input, signature))
+}
+
+fn verify_onlyoffice_jwt(secret: &str, token: &str) -> Result<serde_json::Value, String> {
+    let mut parts = token.split('.');
+    let header = parts.next().unwrap_or_default();
+    let body = parts.next().unwrap_or_default();
+    let signature = parts.next().unwrap_or_default();
+    if header.is_empty() || body.is_empty() || signature.is_empty() || parts.next().is_some() {
+        return Err("Invalid ONLYOFFICE token.".to_string());
+    }
+
+    let signing_input = format!("{}.{}", header, body);
+    let expected = URL_SAFE_NO_PAD.encode(hmac_sha256_bytes(
+        secret.as_bytes(),
+        signing_input.as_bytes(),
+    ));
+    if expected != signature {
+        return Err("Invalid ONLYOFFICE token signature.".to_string());
+    }
+
+    let payload_bytes = URL_SAFE_NO_PAD
+        .decode(body.as_bytes())
+        .map_err(|_| "Invalid ONLYOFFICE token payload.".to_string())?;
+    let payload: serde_json::Value = serde_json::from_slice(&payload_bytes)
+        .map_err(|_| "Invalid ONLYOFFICE token payload.".to_string())?;
+    if let Some(exp) = payload.get("exp").and_then(|value| value.as_u64()) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if now >= exp {
+            return Err("ONLYOFFICE token expired.".to_string());
+        }
+    }
+    Ok(payload)
+}
+
+fn sign_onlyoffice_path_token(
+    secret: &str,
+    kind: &str,
+    relative_path: &str,
+) -> Result<String, String> {
+    let exp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_add(ONLYOFFICE_URL_TOKEN_TTL_SECS);
+    sign_onlyoffice_jwt(
+        secret,
+        &serde_json::json!({
+            "kind": kind,
+            "path": relative_path,
+            "exp": exp,
+        }),
+    )
+}
+
+fn verify_onlyoffice_path_token(
+    secret: &str,
+    token: &str,
+    expected_kind: &str,
+    expected_path: &str,
+) -> Result<(), String> {
+    let payload = verify_onlyoffice_jwt(secret, token)?;
+    let kind = payload
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let path = payload
+        .get("path")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if kind != expected_kind || path != expected_path {
+        return Err("ONLYOFFICE token does not match the requested file.".to_string());
+    }
+    Ok(())
+}
+
+fn onlyoffice_document_key(relative_path: &str, size: u64, modified_at: u64) -> String {
+    URL_SAFE_NO_PAD
+        .encode(Sha256::digest(
+            format!("{}:{}:{}", relative_path, size, modified_at).as_bytes(),
+        ))
+        .chars()
+        .take(48)
+        .collect()
+}
+
+fn onlyoffice_bridge_reason(status: http::StatusCode) -> &'static str {
+    status.canonical_reason().unwrap_or("OK")
+}
+
+async fn read_http_request(socket: &mut TcpStream) -> Result<OnlyOfficeBridgeRequest, String> {
+    let mut buffer = Vec::with_capacity(8192);
+    let mut temp = [0u8; 4096];
+    let header_end = loop {
+        if buffer.len() > 1024 * 1024 {
+            return Err("Request headers exceeded the maximum size.".to_string());
+        }
+        let size = socket
+            .read(&mut temp)
+            .await
+            .map_err(|e| format!("Failed to read office bridge request: {}", e))?;
+        if size == 0 {
+            return Err("Connection closed before request headers were received.".to_string());
+        }
+        buffer.extend_from_slice(&temp[..size]);
+        if let Some(position) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position + 4;
+        }
+    };
+
+    let header_text = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+    let mut lines = header_text.lines();
+    let first_line = lines
+        .next()
+        .ok_or_else(|| "Office bridge request line was missing.".to_string())?;
+    let mut request_parts = first_line.split_whitespace();
+    let method = request_parts
+        .next()
+        .ok_or_else(|| "Office bridge request method was missing.".to_string())?
+        .to_string();
+    let target = request_parts
+        .next()
+        .ok_or_else(|| "Office bridge request target was missing.".to_string())?;
+
+    let mut headers = HashMap::new();
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+        }
+    }
+    let content_length = headers
+        .get("content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let mut body = buffer[header_end..].to_vec();
+    while body.len() < content_length {
+        let size = socket
+            .read(&mut temp)
+            .await
+            .map_err(|e| format!("Failed to read office bridge body: {}", e))?;
+        if size == 0 {
+            break;
+        }
+        body.extend_from_slice(&temp[..size]);
+    }
+    if body.len() > content_length {
+        body.truncate(content_length);
+    }
+
+    Url::parse(&format!("http://127.0.0.1{}", target))
+        .map_err(|e| format!("Invalid office bridge URL: {}", e))?;
+
+    Ok(OnlyOfficeBridgeRequest {
+        method,
+        target: target.to_string(),
+        body,
+    })
+}
+
+async fn write_http_response(
+    socket: &mut TcpStream,
+    status: http::StatusCode,
+    headers: &[(&str, String)],
+    body: &[u8],
+) -> Result<(), String> {
+    let has_content_length = headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Content-Length"));
+    let mut response = format!("HTTP/1.1 {} {}\r\nConnection: close\r\n", status.as_u16(), onlyoffice_bridge_reason(status));
+    if !has_content_length {
+        response.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    for (name, value) in headers {
+        response.push_str(name);
+        response.push_str(": ");
+        response.push_str(value);
+        response.push_str("\r\n");
+    }
+    response.push_str("\r\n");
+    socket
+        .write_all(response.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to write office bridge response headers: {}", e))?;
+    if !body.is_empty() {
+        socket
+            .write_all(body)
+            .await
+            .map_err(|e| format!("Failed to write office bridge response body: {}", e))?;
+    }
+    socket
+        .shutdown()
+        .await
+        .map_err(|e| format!("Failed to close office bridge response: {}", e))
+}
+
+async fn write_json_response(
+    socket: &mut TcpStream,
+    status: http::StatusCode,
+    payload: &serde_json::Value,
+) -> Result<(), String> {
+    let body = serde_json::to_vec(payload)
+        .map_err(|e| format!("Failed to encode office bridge JSON response: {}", e))?;
+    write_http_response(
+        socket,
+        status,
+        &[
+            ("Content-Type", "application/json; charset=utf-8".to_string()),
+            ("Cache-Control", "no-store".to_string()),
+        ],
+        &body,
+    )
+    .await
+}
+
+async fn write_text_response(
+    socket: &mut TcpStream,
+    status: http::StatusCode,
+    content_type: &str,
+    body: &[u8],
+) -> Result<(), String> {
+    write_http_response(
+        socket,
+        status,
+        &[
+            ("Content-Type", content_type.to_string()),
+            ("Cache-Control", "no-store".to_string()),
+        ],
+        body,
+    )
+    .await
+}
+
+fn normalize_onlyoffice_callback_source_url(raw_url: &str) -> Result<Url, String> {
+    let mut parsed =
+        Url::parse(raw_url).map_err(|e| format!("ONLYOFFICE callback returned an invalid source URL: {}", e))?;
+    let host = parsed
+        .host_str()
+        .map(|value| value.to_ascii_lowercase())
+        .ok_or_else(|| "ONLYOFFICE callback URL host is missing.".to_string())?;
+    match host.as_str() {
+        "127.0.0.1" | "localhost" | "host.docker.internal" | "entropic-onlyoffice" => {
+            let _ = parsed.set_scheme("http");
+            parsed
+                .set_host(Some("127.0.0.1"))
+                .map_err(|_| "Failed to normalize ONLYOFFICE callback host.".to_string())?;
+            if parsed.port().is_none() {
+                parsed
+                    .set_port(Some(ONLYOFFICE_HOST_PORT.parse::<u16>().unwrap_or(19794)))
+                    .map_err(|_| "Failed to normalize ONLYOFFICE callback port.".to_string())?;
+            }
+            Ok(parsed)
+        }
+        _ => Err("ONLYOFFICE save callback used an unexpected source host.".to_string()),
+    }
+}
+
+fn normalize_onlyoffice_spreadsheet_if_needed(relative_path: &str) {
+    let ext = Path::new(relative_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    if ext != "xlsx" {
+        return;
+    }
+
+    let full_path = workspace_file(relative_path);
+    let output = docker_command()
+        .args([
+            "exec",
+            OPENCLAW_CONTAINER,
+            "entropic-office",
+            "api",
+            "normalize-spreadsheet",
+            &full_path,
+        ])
+        .output();
+    match output {
+        Ok(result) if result.status.success() => {}
+        Ok(result) => {
+            let stderr = String::from_utf8_lossy(&result.stderr).trim().to_string();
+            if !stderr.is_empty() {
+                eprintln!(
+                    "[Entropic] ONLYOFFICE spreadsheet normalization skipped for {}: {}",
+                    relative_path, stderr
+                );
+            }
+        }
+        Err(error) => {
+            eprintln!(
+                "[Entropic] ONLYOFFICE spreadsheet normalization unavailable for {}: {}",
+                relative_path, error
+            );
+        }
+    }
+}
+
+fn read_workspace_file_bytes(path: &str) -> Result<Vec<u8>, String> {
+    let sanitized = sanitize_workspace_path(path)?;
+    if sanitized.is_empty() {
+        return Err("Invalid path".to_string());
+    }
+    let full_path = workspace_file(&sanitized);
+    let output = docker_command()
+        .args(["exec", OPENCLAW_CONTAINER, "cat", "--", &full_path])
+        .output()
+        .map_err(|e| format!("Failed to read workspace file: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "File not found or unreadable".to_string()
+        } else {
+            stderr
+        });
+    }
+    Ok(output.stdout)
+}
+
+fn workspace_file_metadata(path: &str) -> Result<(u64, u64), String> {
+    let sanitized = sanitize_workspace_path(path)?;
+    if sanitized.is_empty() {
+        return Err("Invalid path".to_string());
+    }
+    let full_path = workspace_file(&sanitized);
+    let raw = docker_exec_output(&[
+        "exec",
+        OPENCLAW_CONTAINER,
+        "stat",
+        "-c",
+        "%s %Y",
+        "--",
+        &full_path,
+    ])?;
+    let mut parts = raw.split_whitespace();
+    let size = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| "Failed to read workspace file size".to_string())?;
+    let modified_at = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| "Failed to read workspace file timestamp".to_string())?;
+    Ok((size, modified_at))
+}
+
+fn write_workspace_file_bytes_atomically(path: &str, bytes: &[u8]) -> Result<(), String> {
+    let sanitized = sanitize_workspace_path(path)?;
+    if sanitized.is_empty() {
+        return Err("Invalid path".to_string());
+    }
+    let full_path = workspace_file(&sanitized);
+    let parent = Path::new(&full_path)
+        .parent()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| WORKSPACE_ROOT.to_string());
+    let encoded = STANDARD.encode(bytes);
+    let script = format!(
+        "set -eu\n\
+dir={dir}\n\
+path={path}\n\
+mkdir -p -- \"$dir\"\n\
+tmp=$(mktemp \"$dir/.entropic-onlyoffice.XXXXXX\")\n\
+trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM\n\
+printf %s {encoded} | base64 -d > \"$tmp\"\n\
+mv -f -- \"$tmp\" \"$path\"\n",
+        dir = sh_single_quote(&parent),
+        path = sh_single_quote(&full_path),
+        encoded = sh_single_quote(&encoded),
+    );
+    run_container_write_script(&script, &full_path)
+}
+
+fn onlyoffice_config_payload(app: &AppHandle, raw_path: &str) -> Result<serde_json::Value, String> {
+    let relative_path = sanitize_workspace_path(raw_path)?;
+    if relative_path.is_empty() {
+        return Err("A workspace file path is required.".to_string());
+    }
+    let spec = onlyoffice_file_spec_for_path(&relative_path)?;
+    normalize_onlyoffice_spreadsheet_if_needed(&relative_path);
+    let (size, modified_at) = workspace_file_metadata(&relative_path)?;
+    let key = onlyoffice_document_key(&relative_path, size, modified_at);
+    let encoded_path = url::form_urlencoded::byte_serialize(relative_path.as_bytes()).collect::<String>();
+    let secret = load_or_create_onlyoffice_jwt_secret(app)?;
+    let download_token = sign_onlyoffice_path_token(&secret, "download", &relative_path)?;
+    let callback_token = sign_onlyoffice_path_token(&secret, "callback", &relative_path)?;
+    let title = Path::new(&relative_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("office-file")
+        .to_string();
+    let user_name = load_agent_settings(app).identity_name;
+    let config = serde_json::json!({
+        "documentType": spec.document_type,
+        "type": "desktop",
+        "document": {
+            "title": title,
+            "fileType": spec.file_type,
+            "key": key,
+            "url": format!(
+                "{}/__onlyoffice_api__/file?path={}&token={}",
+                onlyoffice_bridge_container_origin(),
+                encoded_path,
+                url::form_urlencoded::byte_serialize(download_token.as_bytes()).collect::<String>(),
+            ),
+            "permissions": {
+                "edit": true,
+                "download": true,
+                "print": true,
+                "review": true,
+                "comment": true,
+                "fillForms": true,
+                "copy": true,
+            },
+        },
+        "editorConfig": {
+            "mode": "edit",
+            "lang": "en",
+            "callbackUrl": format!(
+                "{}/__onlyoffice_api__/callback?path={}&token={}",
+                onlyoffice_bridge_container_origin(),
+                encoded_path,
+                url::form_urlencoded::byte_serialize(callback_token.as_bytes()).collect::<String>(),
+            ),
+            "user": {
+                "id": "entropic-desktop",
+                "name": user_name,
+            },
+            "coEditing": {
+                "mode": "fast",
+                "change": true,
+            },
+            "customization": {
+                "autosave": true,
+                "forcesave": true,
+                "compactHeader": false,
+                "compactToolbar": false,
+                "toolbarNoTabs": false,
+            },
+        },
+    });
+    let mut signed_config = config.clone();
+    signed_config
+        .as_object_mut()
+        .ok_or_else(|| "ONLYOFFICE config is not an object".to_string())?
+        .insert(
+            "token".to_string(),
+            serde_json::Value::String(sign_onlyoffice_jwt(&secret, &config)?),
+        );
+    Ok(serde_json::json!({
+        "documentServerUrl": onlyoffice_document_server_origin(),
+        "fileKey": key,
+        "path": relative_path,
+        "updatedAt": modified_at.saturating_mul(1000),
+        "config": signed_config
+    }))
+}
+
+async fn handle_onlyoffice_bridge_connection(
+    mut socket: TcpStream,
+    app: AppHandle,
+) -> Result<(), String> {
+    let request = read_http_request(&mut socket).await?;
+    let parsed = Url::parse(&format!("http://127.0.0.1{}", request.target))
+        .map_err(|e| format!("Invalid office bridge route: {}", e))?;
+    let path = parsed.path();
+
+    if request.method == "GET" && path == "/__onlyoffice__/open" {
+        return write_text_response(
+            &mut socket,
+            http::StatusCode::OK,
+            "text/html; charset=utf-8",
+            ONLYOFFICE_HOST_HTML.as_bytes(),
+        )
+        .await;
+    }
+
+    if path == "/__onlyoffice_api__/health" {
+        return write_json_response(
+            &mut socket,
+            http::StatusCode::OK,
+            &serde_json::json!({ "ok": true }),
+        )
+        .await;
+    }
+
+    if request.method == "GET" && path == "/__onlyoffice_api__/config" {
+        let relative_path = parsed
+            .query_pairs()
+            .find(|(key, _)| key == "path")
+            .map(|(_, value)| value.to_string())
+            .unwrap_or_default();
+        match onlyoffice_config_payload(&app, &relative_path) {
+            Ok(payload) => {
+                return write_json_response(&mut socket, http::StatusCode::OK, &payload).await;
+            }
+            Err(error) => {
+                return write_json_response(
+                    &mut socket,
+                    http::StatusCode::BAD_REQUEST,
+                    &serde_json::json!({ "error": error }),
+                )
+                .await;
+            }
+        }
+    }
+
+    if (request.method == "GET" || request.method == "HEAD") && path == "/__onlyoffice_api__/file" {
+        let relative_path = parsed
+            .query_pairs()
+            .find(|(key, _)| key == "path")
+            .map(|(_, value)| value.to_string())
+            .unwrap_or_default();
+        let token = parsed
+            .query_pairs()
+            .find(|(key, _)| key == "token")
+            .map(|(_, value)| value.to_string())
+            .unwrap_or_default();
+        let secret = match load_or_create_onlyoffice_jwt_secret(&app) {
+            Ok(secret) => secret,
+            Err(error) => {
+                return write_json_response(
+                    &mut socket,
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    &serde_json::json!({ "error": error }),
+                )
+                .await;
+            }
+        };
+        if let Err(error) = verify_onlyoffice_path_token(&secret, &token, "download", &relative_path) {
+            return write_json_response(
+                &mut socket,
+                http::StatusCode::FORBIDDEN,
+                &serde_json::json!({ "error": error }),
+            )
+            .await;
+        }
+        let spec = match onlyoffice_file_spec_for_path(&relative_path) {
+            Ok(spec) => spec,
+            Err(error) => {
+                return write_json_response(
+                    &mut socket,
+                    http::StatusCode::BAD_REQUEST,
+                    &serde_json::json!({ "error": error }),
+                )
+                .await;
+            }
+        };
+        let (size, _) = match workspace_file_metadata(&relative_path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                return write_json_response(
+                    &mut socket,
+                    http::StatusCode::NOT_FOUND,
+                    &serde_json::json!({ "error": error }),
+                )
+                .await;
+            }
+        };
+        if request.method == "HEAD" {
+            return write_http_response(
+                &mut socket,
+                http::StatusCode::OK,
+                &[
+                    ("Content-Type", spec.content_type.to_string()),
+                    ("Cache-Control", "no-store".to_string()),
+                    ("Content-Length", size.to_string()),
+                    ("Accept-Ranges", "bytes".to_string()),
+                ],
+                &[],
+            )
+            .await;
+        }
+        match read_workspace_file_bytes(&relative_path) {
+            Ok(bytes) => {
+                return write_http_response(
+                    &mut socket,
+                    http::StatusCode::OK,
+                    &[
+                        ("Content-Type", spec.content_type.to_string()),
+                        ("Cache-Control", "no-store".to_string()),
+                        ("Accept-Ranges", "bytes".to_string()),
+                    ],
+                    &bytes,
+                )
+                .await;
+            }
+            Err(error) => {
+                return write_json_response(
+                    &mut socket,
+                    http::StatusCode::NOT_FOUND,
+                    &serde_json::json!({ "error": error }),
+                )
+                .await;
+            }
+        }
+    }
+
+    if request.method == "POST" && path == "/__onlyoffice_api__/callback" {
+        let relative_path = parsed
+            .query_pairs()
+            .find(|(key, _)| key == "path")
+            .map(|(_, value)| value.to_string())
+            .unwrap_or_default();
+        let token = parsed
+            .query_pairs()
+            .find(|(key, _)| key == "token")
+            .map(|(_, value)| value.to_string())
+            .unwrap_or_default();
+        let secret = match load_or_create_onlyoffice_jwt_secret(&app) {
+            Ok(secret) => secret,
+            Err(error) => {
+                return write_json_response(
+                    &mut socket,
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    &serde_json::json!({ "error": error }),
+                )
+                .await;
+            }
+        };
+        if let Err(error) = verify_onlyoffice_path_token(&secret, &token, "callback", &relative_path) {
+            return write_json_response(
+                &mut socket,
+                http::StatusCode::FORBIDDEN,
+                &serde_json::json!({ "error": error }),
+            )
+            .await;
+        }
+        let body: serde_json::Value = match serde_json::from_slice(&request.body) {
+            Ok(body) => body,
+            Err(error) => {
+                return write_json_response(
+                    &mut socket,
+                    http::StatusCode::BAD_REQUEST,
+                    &serde_json::json!({ "error": format!("Invalid ONLYOFFICE callback body: {}", error) }),
+                )
+                .await;
+            }
+        };
+        let status = body.get("status").and_then(|value| value.as_i64()).unwrap_or(0);
+        if (status == 2 || status == 6)
+            && body.get("url").and_then(|value| value.as_str()).is_some()
+        {
+            let source_url = match normalize_onlyoffice_callback_source_url(
+                body.get("url").and_then(|value| value.as_str()).unwrap_or_default(),
+            ) {
+                Ok(url) => url,
+                Err(error) => {
+                    return write_json_response(
+                        &mut socket,
+                        http::StatusCode::BAD_REQUEST,
+                        &serde_json::json!({ "error": error }),
+                    )
+                    .await;
+                }
+            };
+            let client = match reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+            {
+                Ok(client) => client,
+                Err(error) => {
+                    return write_json_response(
+                        &mut socket,
+                        http::StatusCode::INTERNAL_SERVER_ERROR,
+                        &serde_json::json!({ "error": format!("Failed to build ONLYOFFICE callback client: {}", error) }),
+                    )
+                    .await;
+                }
+            };
+            let response = match client.get(source_url.clone()).send().await {
+                Ok(response) => response,
+                Err(error) => {
+                    return write_json_response(
+                        &mut socket,
+                        http::StatusCode::BAD_GATEWAY,
+                        &serde_json::json!({ "error": format!("ONLYOFFICE save download failed: {}", error) }),
+                    )
+                    .await;
+                }
+            };
+            if !response.status().is_success() {
+                return write_json_response(
+                    &mut socket,
+                    http::StatusCode::BAD_GATEWAY,
+                    &serde_json::json!({ "error": format!("ONLYOFFICE save download failed with {}", response.status()) }),
+                )
+                .await;
+            }
+            let bytes = match response.bytes().await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    return write_json_response(
+                        &mut socket,
+                        http::StatusCode::BAD_GATEWAY,
+                        &serde_json::json!({ "error": format!("Failed to read ONLYOFFICE save bytes: {}", error) }),
+                    )
+                    .await;
+                }
+            };
+            if let Err(error) = write_workspace_file_bytes_atomically(&relative_path, &bytes) {
+                return write_json_response(
+                    &mut socket,
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    &serde_json::json!({ "error": error }),
+                )
+                .await;
+            }
+        }
+        return write_json_response(
+            &mut socket,
+            http::StatusCode::OK,
+            &serde_json::json!({ "error": 0 }),
+        )
+        .await;
+    }
+
+    write_json_response(
+        &mut socket,
+        http::StatusCode::NOT_FOUND,
+        &serde_json::json!({ "error": "Route not found" }),
+    )
+    .await
+}
+
+async fn wait_for_onlyoffice_bridge_health() -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| format!("Failed to build ONLYOFFICE bridge client: {}", e))?;
+    let url = format!("{}/__onlyoffice_api__/health", onlyoffice_bridge_local_origin());
+    let mut last_error = "ONLYOFFICE bridge did not report readiness yet".to_string();
+    for _ in 0..30 {
+        match client.get(url.as_str()).send().await {
+            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) => {
+                last_error = format!("ONLYOFFICE bridge returned {}", response.status());
+            }
+            Err(error) => {
+                last_error = error.to_string();
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    Err(format!(
+        "Timed out waiting for ONLYOFFICE bridge readiness: {}",
+        last_error
+    ))
+}
+
+async fn start_onlyoffice_bridge(app: AppHandle) -> Result<(), String> {
+    if wait_for_onlyoffice_bridge_health().await.is_ok() {
+        return Ok(());
+    }
+
+    let _guard = onlyoffice_bridge_start_lock().lock().await;
+    if wait_for_onlyoffice_bridge_health().await.is_ok() {
+        return Ok(());
+    }
+
+    let bind_addr = format!("0.0.0.0:{}", ONLYOFFICE_BRIDGE_PORT);
+    match TcpListener::bind(bind_addr.as_str()).await {
+        Ok(listener) => {
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let (socket, _) = match listener.accept().await {
+                        Ok(values) => values,
+                        Err(error) => {
+                            eprintln!("[Entropic] ONLYOFFICE bridge accept failed: {}", error);
+                            break;
+                        }
+                    };
+                    let app_handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) = handle_onlyoffice_bridge_connection(socket, app_handle).await {
+                            eprintln!("[Entropic] ONLYOFFICE bridge request failed: {}", error);
+                        }
+                    });
+                }
+            });
+        }
+        Err(error) => {
+            if wait_for_onlyoffice_bridge_health().await.is_err() {
+                return Err(format!(
+                    "Failed to bind ONLYOFFICE desktop bridge on {}: {}",
+                    bind_addr, error
+                ));
+            }
+        }
+    }
+
+    wait_for_onlyoffice_bridge_health().await
+}
+
+fn syncthing_config_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Failed to resolve app data dir".to_string())?
+        .join("syncthing");
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create Syncthing config directory: {}", e))?;
+    Ok(dir)
+}
+
+fn syncthing_config_xml_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(syncthing_config_dir(app)?.join("config.xml"))
+}
+
+fn syncthing_gui_url() -> String {
+    format!("http://127.0.0.1:{}", SYNCTHING_GUI_HOST_PORT)
+}
+
+fn syncthing_api_url(path: &str) -> Result<Url, String> {
+    Url::parse(&format!("{}{}", syncthing_gui_url(), path))
+        .map_err(|e| format!("Failed to build Syncthing API URL: {}", e))
+}
+
+fn syncthing_warning_message() -> String {
+    "Syncthing is running in Docker bridge mode. Global discovery and relays should work, but same-LAN discovery can be less reliable than host networking.".to_string()
+}
+
+fn syncthing_folder_id(share_id: &str) -> String {
+    format!("{}{share_id}", SYNCTHING_MANAGED_FOLDER_PREFIX)
+}
+
+fn extract_xml_tag(contents: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = contents.find(&open)? + open.len();
+    let end = contents[start..].find(&close)? + start;
+    let value = contents[start..end].trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn read_syncthing_api_key(app: &AppHandle) -> Result<String, String> {
+    let config_path = syncthing_config_xml_path(app)?;
+    let contents = fs::read_to_string(&config_path).map_err(|e| {
+        format!(
+            "Failed to read Syncthing config {}: {}",
+            config_path.display(),
+            e
+        )
+    })?;
+    extract_xml_tag(&contents, "apikey")
+        .ok_or_else(|| "Syncthing API key is not available yet".to_string())
+}
+
+fn json_string_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(|v| v.to_string())
+}
+
+fn json_bool_field(value: &serde_json::Value, key: &str) -> Option<bool> {
+    value.get(key).and_then(serde_json::Value::as_bool)
+}
+
+fn json_u64_field(value: &serde_json::Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(|field| {
+        field.as_u64().or_else(|| {
+            field
+                .as_i64()
+                .and_then(|value| (value >= 0).then_some(value as u64))
+        })
+    })
+}
+
+fn syncthing_status_snapshot_from_registry(
+    registry: &StoredShareRegistry,
+    running: bool,
+    ready: bool,
+    error: Option<String>,
+) -> SyncthingShareStatusSnapshot {
+    let contact_by_id: HashMap<String, ShareContact> = registry
+        .contacts
+        .iter()
+        .cloned()
+        .map(|contact| (contact.id.clone(), contact))
+        .collect();
+    let contacts = registry
+        .contacts
+        .iter()
+        .map(|contact| {
+            let device_id = normalize_optional_share_string(contact.syncthing_device_id.clone());
+            let (status, message) = match device_id.as_deref() {
+                None => (
+                    "pending_device_id".to_string(),
+                    Some("Add the remote Syncthing device ID to connect this contact.".to_string()),
+                ),
+                Some(_) if !running => (
+                    "transport_stopped".to_string(),
+                    Some("Syncthing is not running yet.".to_string()),
+                ),
+                Some(_) if !ready => (
+                    "pending_setup".to_string(),
+                    Some(
+                        "Syncthing is starting or still applying the current share registry."
+                            .to_string(),
+                    ),
+                ),
+                Some(_) => ("ready".to_string(), None),
+            };
+            SyncthingShareContactStatus {
+                contact_id: contact.id.clone(),
+                display_name: contact.display_name.clone(),
+                device_id,
+                invite_state: contact.invite_state.clone(),
+                status,
+                configured: false,
+                connected: false,
+                address: None,
+                connection_type: None,
+                last_seen: None,
+                message,
+            }
+        })
+        .collect();
+    let folders = registry
+        .folders
+        .iter()
+        .map(|folder| {
+            let ready_member_count = folder
+                .members
+                .iter()
+                .filter(|member| {
+                    contact_by_id
+                        .get(&member.contact_id)
+                        .and_then(|contact| {
+                            normalize_optional_share_string(contact.syncthing_device_id.clone())
+                        })
+                        .is_some()
+                })
+                .count();
+            let (status, message) = if ready_member_count == 0 {
+                (
+                    "pending_device_ids".to_string(),
+                    Some(
+                        "Add at least one valid Syncthing device ID for this shared folder."
+                            .to_string(),
+                    ),
+                )
+            } else if !running {
+                (
+                    "transport_stopped".to_string(),
+                    Some("Syncthing is not running yet.".to_string()),
+                )
+            } else if !ready {
+                (
+                    "pending_setup".to_string(),
+                    Some(
+                        "Syncthing is starting or still applying the current share registry."
+                            .to_string(),
+                    ),
+                )
+            } else {
+                ("pending_setup".to_string(), None)
+            };
+            SyncthingSharedFolderStatus {
+                share_id: folder.id.clone(),
+                path: folder.path.clone(),
+                title: folder.title.clone(),
+                status,
+                state: None,
+                configured_member_count: ready_member_count,
+                connected_member_count: 0,
+                need_items: 0,
+                need_bytes: 0,
+                pull_errors: 0,
+                last_scan: None,
+                last_file_at: None,
+                message,
+            }
+        })
+        .collect();
+    SyncthingShareStatusSnapshot {
+        running,
+        ready,
+        local_device_id: None,
+        version: None,
+        gui_url: syncthing_gui_url(),
+        warning: Some(syncthing_warning_message()),
+        error,
+        contacts,
+        folders,
+        incoming_offers: Vec::new(),
+    }
+}
+
+fn build_syncthing_device_config(
+    template: &serde_json::Value,
+    existing: Option<&serde_json::Value>,
+    device_id: &str,
+    name: &str,
+) -> Result<serde_json::Value, String> {
+    let mut device = existing.cloned().unwrap_or_else(|| template.clone());
+    let object = device
+        .as_object_mut()
+        .ok_or_else(|| "Syncthing device template is not an object".to_string())?;
+    object.insert(
+        "deviceID".to_string(),
+        serde_json::Value::String(device_id.to_string()),
+    );
+    object.insert(
+        "name".to_string(),
+        serde_json::Value::String(name.to_string()),
+    );
+    object.insert("paused".to_string(), serde_json::Value::Bool(false));
+    if object
+        .get("addresses")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| values.is_empty())
+        .unwrap_or(true)
+    {
+        object.insert("addresses".to_string(), serde_json::json!(["dynamic"]));
+    }
+    if !object.contains_key("autoAcceptFolders") {
+        object.insert(
+            "autoAcceptFolders".to_string(),
+            serde_json::Value::Bool(false),
+        );
+    }
+    Ok(device)
+}
+
+fn build_syncthing_folder_config(
+    template: &serde_json::Value,
+    existing: Option<&serde_json::Value>,
+    share: &SharedWorkspaceFolder,
+    local_device_id: &str,
+    member_device_ids: &[String],
+) -> Result<serde_json::Value, String> {
+    let mut folder = existing.cloned().unwrap_or_else(|| template.clone());
+    let object = folder
+        .as_object_mut()
+        .ok_or_else(|| "Syncthing folder template is not an object".to_string())?;
+    object.insert(
+        "id".to_string(),
+        serde_json::Value::String(shared_workspace_folder_syncthing_id(share)),
+    );
+    object.insert(
+        "label".to_string(),
+        serde_json::Value::String(share.title.clone()),
+    );
+    object.insert(
+        "path".to_string(),
+        serde_json::Value::String(workspace_file(&share.path)),
+    );
+    object.insert(
+        "type".to_string(),
+        serde_json::Value::String("sendreceive".to_string()),
+    );
+    object.insert("paused".to_string(), serde_json::Value::Bool(false));
+
+    let mut device_ids = Vec::with_capacity(member_device_ids.len() + 1);
+    device_ids.push(local_device_id.to_string());
+    device_ids.extend(member_device_ids.iter().cloned());
+    device_ids.sort();
+    device_ids.dedup();
+    object.insert(
+        "devices".to_string(),
+        serde_json::Value::Array(
+            device_ids
+                .into_iter()
+                .map(|device_id| {
+                    serde_json::json!({
+                        "deviceID": device_id,
+                        "introducedBy": "",
+                        "encryptionPassword": "",
+                    })
+                })
+                .collect(),
+        ),
+    );
+    Ok(folder)
+}
+
+async fn wait_for_syncthing_noauth_health() -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| format!("Failed to build Syncthing health client: {}", e))?;
+    let url = format!("{}/rest/noauth/health", syncthing_gui_url());
+    let mut last_error = "Syncthing did not report health yet".to_string();
+    for _ in 0..30 {
+        match client.get(url.as_str()).send().await {
+            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) => {
+                last_error = format!("Syncthing health returned {}", response.status());
+            }
+            Err(error) => {
+                last_error = error.to_string();
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Err(format!(
+        "Timed out waiting for Syncthing health: {}",
+        last_error
+    ))
+}
+
+async fn wait_for_syncthing_api_key(app: &AppHandle) -> Result<String, String> {
+    let mut last_error = "Syncthing API key is not available yet".to_string();
+    for _ in 0..30 {
+        match read_syncthing_api_key(app) {
+            Ok(api_key) => return Ok(api_key),
+            Err(error) => {
+                last_error = error;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Err(last_error)
+}
+
+async fn syncthing_request_json_url(
+    app: &AppHandle,
+    method: reqwest::Method,
+    url: Url,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let api_key = read_syncthing_api_key(app)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("Failed to build Syncthing client: {}", e))?;
+    let mut request = client
+        .request(method, url.clone())
+        .header("X-API-Key", api_key);
+    if let Some(payload) = body {
+        request = request.json(&payload);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("Syncthing request to {} failed: {}", url, e))?;
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read Syncthing response body: {}", e))?;
+    if !status.is_success() {
+        let body = String::from_utf8_lossy(&bytes).trim().to_string();
+        return Err(if body.is_empty() {
+            format!("Syncthing request to {} failed with {}", url, status)
+        } else {
+            format!(
+                "Syncthing request to {} failed with {}: {}",
+                url, status, body
+            )
+        });
+    }
+    if bytes.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|e| format!("Failed to decode Syncthing response from {}: {}", url, e))
+}
+
+async fn syncthing_request_json(
+    app: &AppHandle,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    syncthing_request_json_url(app, method, syncthing_api_url(path)?, body).await
+}
+
+async fn wait_for_onlyoffice_health() -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(4))
+        .build()
+        .map_err(|e| format!("Failed to build ONLYOFFICE health client: {}", e))?;
+    let url = format!(
+        "http://127.0.0.1:{}/web-apps/apps/api/documents/api.js",
+        ONLYOFFICE_HOST_PORT
+    );
+    let mut last_error = "ONLYOFFICE did not report readiness yet".to_string();
+    for _ in 0..90 {
+        match client.get(url.as_str()).send().await {
+            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) => {
+                last_error = format!("ONLYOFFICE returned {}", response.status());
+            }
+            Err(error) => {
+                last_error = error.to_string();
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    Err(format!(
+        "Timed out waiting for ONLYOFFICE readiness: {}",
+        last_error
+    ))
+}
+
+fn onlyoffice_status_from_error(error: Option<String>) -> OnlyOfficeStatus {
+    let running = named_gateway_container_exists(ONLYOFFICE_CONTAINER, true);
+    OnlyOfficeStatus {
+        running,
+        ready: running && error.is_none(),
+        public_url: onlyoffice_bridge_local_origin(),
+        image: onlyoffice_image_name(),
+        error,
+    }
+}
+
+fn ensure_onlyoffice_image() -> Result<(), String> {
+    let image = onlyoffice_image_name();
+    let check = docker_command()
+        .args(["image", "inspect", image.as_str()])
+        .output()
+        .map_err(|e| format!("Failed to check ONLYOFFICE image: {}", e))?;
+    if check.status.success() {
+        return Ok(());
+    }
+
+    let pull = docker_command()
+        .args(["pull", image.as_str()])
+        .output()
+        .map_err(|e| format!("Failed to pull ONLYOFFICE image {}: {}", image, e))?;
+    if pull.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&pull.stderr).trim().to_string();
+    Err(format!(
+        "Failed to pull ONLYOFFICE image {}: {}",
+        image,
+        if stderr.is_empty() {
+            "unknown error".to_string()
+        } else {
+            stderr
+        }
+    ))
+}
+
+async fn start_onlyoffice_sidecar(app: &AppHandle) -> Result<(), String> {
+    let expected_image = onlyoffice_image_name();
+    let check = docker_command()
+        .args(["ps", "-q", "-f", &format!("name={}", ONLYOFFICE_CONTAINER)])
+        .output()
+        .map_err(|e| format!("Failed to check ONLYOFFICE container: {}", e))?;
+    if !check.stdout.is_empty()
+        && onlyoffice_container_image().as_deref() == Some(expected_image.as_str())
+    {
+        wait_for_onlyoffice_health().await?;
+        return Ok(());
+    }
+    if !check.stdout.is_empty() {
+        let _ = docker_command()
+            .args(["rm", "-f", ONLYOFFICE_CONTAINER])
+            .output();
+    }
+
+    let check_all = docker_command()
+        .args(["ps", "-aq", "-f", &format!("name={}", ONLYOFFICE_CONTAINER)])
+        .output()
+        .map_err(|e| format!("Failed to inspect ONLYOFFICE container state: {}", e))?;
+    if !check_all.stdout.is_empty() {
+        if onlyoffice_container_image().as_deref() == Some(expected_image.as_str()) {
+            let start = docker_command()
+                .args(["start", ONLYOFFICE_CONTAINER])
+                .output()
+                .map_err(|e| format!("Failed to start ONLYOFFICE container: {}", e))?;
+            if start.status.success() {
+                wait_for_onlyoffice_health().await?;
+                return Ok(());
+            }
+        }
+        let _ = docker_command()
+            .args(["rm", "-f", ONLYOFFICE_CONTAINER])
+            .output();
+    }
+
+    let _ = docker_command()
+        .args(["network", "create", OPENCLAW_NETWORK])
+        .output();
+    ensure_onlyoffice_image()?;
+    let jwt_secret = load_or_create_onlyoffice_jwt_secret(app)?;
+
+    let docker_args = vec![
+        "run".to_string(),
+        "-d".to_string(),
+        "--name".to_string(),
+        ONLYOFFICE_CONTAINER.to_string(),
+        "--restart".to_string(),
+        "unless-stopped".to_string(),
+        "--network".to_string(),
+        OPENCLAW_NETWORK.to_string(),
+        "--add-host".to_string(),
+        docker_host_alias_arg(),
+        "-e".to_string(),
+        "JWT_ENABLED=true".to_string(),
+        "-e".to_string(),
+        format!("JWT_SECRET={}", jwt_secret),
+        "-p".to_string(),
+        format!(
+            "127.0.0.1:{}:{}",
+            ONLYOFFICE_HOST_PORT, ONLYOFFICE_HTTP_PORT
+        ),
+        expected_image,
+    ];
+
+    let run = docker_command()
+        .args(&docker_args)
+        .output()
+        .map_err(|e| format!("Failed to start ONLYOFFICE container: {}", e))?;
+    if !run.status.success() {
+        let stderr = String::from_utf8_lossy(&run.stderr).trim().to_string();
+        return Err(format!(
+            "Failed to start ONLYOFFICE container: {}",
+            if stderr.is_empty() {
+                "unknown error".to_string()
+            } else {
+                stderr
+            }
+        ));
+    }
+
+    wait_for_onlyoffice_health().await?;
+    Ok(())
+}
+
+fn ensure_syncthing_image() -> Result<(), String> {
+    let image = syncthing_image_name();
+    let check = docker_command()
+        .args(["image", "inspect", image.as_str()])
+        .output()
+        .map_err(|e| format!("Failed to check Syncthing image: {}", e))?;
+    if check.status.success() {
+        return Ok(());
+    }
+
+    let pull = docker_command()
+        .args(["pull", image.as_str()])
+        .output()
+        .map_err(|e| format!("Failed to pull Syncthing image {}: {}", image, e))?;
+    if pull.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&pull.stderr).trim().to_string();
+    Err(format!(
+        "Failed to pull Syncthing image {}: {}",
+        image,
+        if stderr.is_empty() {
+            "unknown error".to_string()
+        } else {
+            stderr
+        }
+    ))
+}
+
+async fn start_syncthing_sidecar(app: &AppHandle) -> Result<(), String> {
+    let expected_image = syncthing_image_name();
+    let config_dir = syncthing_config_dir(app)?;
+    let config_mount = format!(
+        "{}:/var/syncthing",
+        docker_host_path_for_command(config_dir.as_path())
+    );
+
+    let check = docker_command()
+        .args(["ps", "-q", "-f", &format!("name={}", SYNCTHING_CONTAINER)])
+        .output()
+        .map_err(|e| format!("Failed to check Syncthing container: {}", e))?;
+    if !check.stdout.is_empty()
+        && syncthing_container_image().as_deref() == Some(expected_image.as_str())
+    {
+        wait_for_syncthing_noauth_health().await?;
+        wait_for_syncthing_api_key(app).await?;
+        return Ok(());
+    }
+    if !check.stdout.is_empty() {
+        let _ = docker_command()
+            .args(["rm", "-f", SYNCTHING_CONTAINER])
+            .output();
+    }
+
+    let check_all = docker_command()
+        .args(["ps", "-aq", "-f", &format!("name={}", SYNCTHING_CONTAINER)])
+        .output()
+        .map_err(|e| format!("Failed to inspect Syncthing container state: {}", e))?;
+    if !check_all.stdout.is_empty() {
+        if syncthing_container_image().as_deref() == Some(expected_image.as_str()) {
+            let start = docker_command()
+                .args(["start", SYNCTHING_CONTAINER])
+                .output()
+                .map_err(|e| format!("Failed to start Syncthing container: {}", e))?;
+            if start.status.success() {
+                wait_for_syncthing_noauth_health().await?;
+                wait_for_syncthing_api_key(app).await?;
+                return Ok(());
+            }
+        }
+        let _ = docker_command()
+            .args(["rm", "-f", SYNCTHING_CONTAINER])
+            .output();
+    }
+
+    let _ = docker_command()
+        .args(["network", "create", OPENCLAW_NETWORK])
+        .output();
+    ensure_syncthing_image()?;
+
+    let docker_args = vec![
+        "run".to_string(),
+        "-d".to_string(),
+        "--name".to_string(),
+        SYNCTHING_CONTAINER.to_string(),
+        "--restart".to_string(),
+        "unless-stopped".to_string(),
+        "--hostname".to_string(),
+        SYNCTHING_CONTAINER.to_string(),
+        "--user".to_string(),
+        "1000:1000".to_string(),
+        "--cap-drop=ALL".to_string(),
+        "--security-opt".to_string(),
+        "no-new-privileges".to_string(),
+        "--network".to_string(),
+        OPENCLAW_NETWORK.to_string(),
+        "-e".to_string(),
+        "PUID=1000".to_string(),
+        "-e".to_string(),
+        "PGID=1000".to_string(),
+        "-e".to_string(),
+        "STGUIADDRESS=0.0.0.0:8384".to_string(),
+        "-v".to_string(),
+        openclaw_data_volume_mount(),
+        "-v".to_string(),
+        config_mount,
+        "-p".to_string(),
+        format!(
+            "127.0.0.1:{}:{}",
+            SYNCTHING_GUI_HOST_PORT, SYNCTHING_GUI_PORT
+        ),
+        "-p".to_string(),
+        format!("{0}:{0}/tcp", SYNCTHING_SYNC_PORT),
+        "-p".to_string(),
+        format!("{0}:{0}/udp", SYNCTHING_SYNC_PORT),
+        "-p".to_string(),
+        format!("{0}:{0}/udp", SYNCTHING_DISCOVERY_PORT),
+        expected_image,
+    ];
+
+    let run = docker_command()
+        .args(&docker_args)
+        .output()
+        .map_err(|e| format!("Failed to start Syncthing container: {}", e))?;
+    if !run.status.success() {
+        let stderr = String::from_utf8_lossy(&run.stderr).trim().to_string();
+        return Err(format!(
+            "Failed to start Syncthing container: {}",
+            if stderr.is_empty() {
+                "unknown error".to_string()
+            } else {
+                stderr
+            }
+        ));
+    }
+
+    wait_for_syncthing_noauth_health().await?;
+    wait_for_syncthing_api_key(app).await?;
+    Ok(())
+}
+
+fn workspace_sync_scan_container() -> Option<&'static str> {
+    if named_gateway_container_exists(SYNCTHING_CONTAINER, true) {
+        Some(SYNCTHING_CONTAINER)
+    } else {
+        running_gateway_container_name()
+    }
 }
 
 /// Preserve Entropic containers on app exit; keep state for faster resume.
@@ -5841,12 +7715,28 @@ fn native_preview_navigation_allowed(url: &Url) -> bool {
         None => return false,
     };
     let host_port = BROWSER_SERVICE_HOST_PORT.parse::<u16>().unwrap_or(19792);
+    let onlyoffice_bridge_port = ONLYOFFICE_BRIDGE_PORT.parse::<u16>().unwrap_or(19796);
+    let onlyoffice_host_port = ONLYOFFICE_HOST_PORT.parse::<u16>().unwrap_or(19794);
     let current_port = url.port_or_known_default().unwrap_or(host_port);
-    if current_port != host_port {
-        return false;
-    }
     if host == "127.0.0.1" || host == "localhost" {
-        return url.path() == "/__workspace__/" || url.path().starts_with("/__workspace__/");
+        if current_port == onlyoffice_bridge_port {
+            let path = url.path();
+            return path.starts_with("/__onlyoffice__/") || path.starts_with("/__onlyoffice_api__/");
+        }
+        if current_port == onlyoffice_host_port {
+            return true;
+        }
+        if current_port != host_port {
+            return false;
+        }
+        let path = url.path();
+        return path == "/__workspace__/"
+            || path.starts_with("/__workspace__/")
+            || path.starts_with("/__workspace_editor__/")
+            || path.starts_with("/__onlyoffice__/")
+            || path.starts_with("/__onlyoffice_api__/")
+            || path == "/__onlyoffice_proxy__"
+            || path.starts_with("/__onlyoffice_proxy__/");
     }
     if let Some(port_text) = host
         .strip_prefix('p')
@@ -5881,6 +7771,8 @@ fn resolve_native_preview_target_url(raw: &str) -> Result<Url, String> {
         .ok_or_else(|| "Preview URL host is required".to_string())?;
     let host_port = BROWSER_SERVICE_HOST_PORT.parse::<u16>().unwrap_or(19792);
     let browser_service_port = BROWSER_SERVICE_PORT.parse::<u16>().unwrap_or(19791);
+    let onlyoffice_bridge_port = ONLYOFFICE_BRIDGE_PORT.parse::<u16>().unwrap_or(19796);
+    let onlyoffice_host_port = ONLYOFFICE_HOST_PORT.parse::<u16>().unwrap_or(19794);
 
     if native_preview_navigation_allowed(&parsed) {
         return Ok(parsed);
@@ -5894,16 +7786,24 @@ fn resolve_native_preview_target_url(raw: &str) -> Result<Url, String> {
         let target_port = parsed
             .port_or_known_default()
             .ok_or_else(|| "Preview URL must include an explicit local port".to_string())?;
-        if target_port == browser_service_port
-            && (parsed.path() == "/__workspace__/" || parsed.path().starts_with("/__workspace__/"))
-        {
+        if target_port == browser_service_port {
             parsed
                 .set_host(Some("127.0.0.1"))
-                .map_err(|_| "Failed to normalize workspace preview host".to_string())?;
+                .map_err(|_| "Failed to normalize browser preview host".to_string())?;
             parsed
                 .set_port(Some(host_port))
-                .map_err(|_| "Failed to normalize workspace preview port".to_string())?;
-            return Ok(parsed);
+                .map_err(|_| "Failed to normalize browser preview port".to_string())?;
+            if native_preview_navigation_allowed(&parsed) {
+                return Ok(parsed);
+            }
+        }
+        if target_port == onlyoffice_bridge_port || target_port == onlyoffice_host_port {
+            parsed
+                .set_host(Some("127.0.0.1"))
+                .map_err(|_| "Failed to normalize office preview host".to_string())?;
+            if native_preview_navigation_allowed(&parsed) {
+                return Ok(parsed);
+            }
         }
         if target_port == host_port && native_preview_navigation_allowed(&parsed) {
             return Ok(parsed);
@@ -6193,11 +8093,7 @@ fn signal_gateway_config_reload() {
         .output();
 }
 
-async fn wait_for_gateway_after_config_reload(
-    app: &AppHandle,
-    context: &str,
-    attempts: usize,
-) {
+async fn wait_for_gateway_after_config_reload(app: &AppHandle, context: &str, attempts: usize) {
     if let Ok(token) = effective_gateway_token(app) {
         eprintln!(
             "[Entropic] {}: waiting for gateway health after config reload...",
@@ -6875,6 +8771,9 @@ fn apply_agent_settings(app: &AppHandle, state: &AppState) -> Result<(), String>
         let mark = if cap.enabled { "x" } else { " " };
         tools_body.push_str(&format!("- [{}] {}\n", mark, cap.label));
     }
+    tools_body.push_str(
+        "\n## Office Files\n- Use `entropic-office spreadsheet todo /data/workspace/todo.xlsx \"Task 1\" \"Task 2\"` to create a workbook.\n- Use `entropic-office spreadsheet new /data/workspace/file.xlsx` for a blank workbook.\n- Use `entropic-office document new /data/workspace/file.docx` or `entropic-office document lines /data/workspace/file.docx \"Line 1\" \"Line 2\"` for docx files.\n",
+    );
 
     let mut id_body = String::from("# IDENTITY.md - Who Am I?\n\n");
     id_body.push_str(&format!("- **Name:** {}\n", settings.identity_name.trim()));
@@ -7688,6 +9587,15 @@ fn auth_store_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("auth.json"))
 }
 
+fn shares_store_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Failed to resolve app data dir".to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create app data dir: {}", e))?;
+    Ok(dir.join("entropic-shares.json"))
+}
+
 const ENTROPIC_APP_IDENTIFIER: &str = "ai.openclaw.entropic";
 const ENTROPIC_DEV_APP_IDENTIFIER: &str = "ai.openclaw.entropic.dev";
 const LEGACY_NOVA_APP_IDENTIFIER: &str = "ai.openclaw.nova";
@@ -7979,6 +9887,111 @@ fn save_auth(app: &AppHandle, data: &StoredAuth) -> Result<(), String> {
     let payload = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
     fs::write(&path, payload).map_err(|e| format!("Failed to write auth store: {}", e))?;
     Ok(())
+}
+
+fn load_share_registry(app: &AppHandle) -> StoredShareRegistry {
+    let path = match shares_store_path(app) {
+        Ok(path) => path,
+        Err(_) => return StoredShareRegistry::default(),
+    };
+    let Ok(raw) = fs::read_to_string(path) else {
+        return StoredShareRegistry::default();
+    };
+    serde_json::from_str::<StoredShareRegistry>(&raw).unwrap_or_default()
+}
+
+fn save_share_registry(app: &AppHandle, data: &StoredShareRegistry) -> Result<(), String> {
+    let path = shares_store_path(app)?;
+    let payload = serde_json::to_string_pretty(data)
+        .map_err(|e| format!("Failed to serialize share registry: {}", e))?;
+    fs::write(&path, payload).map_err(|e| format!("Failed to write share registry: {}", e))?;
+    Ok(())
+}
+
+fn current_millis_u64() -> u64 {
+    current_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn normalize_share_display_name(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("Contact name is required".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_optional_share_string(raw: Option<String>) -> Option<String> {
+    raw.map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_share_id(raw: &str, label: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{} is required", label));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn default_shared_folder_title(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|value| value.to_string_lossy().trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Shared Folder".to_string())
+}
+
+fn default_shared_folder_direction() -> String {
+    "outgoing".to_string()
+}
+
+fn shared_workspace_folder_syncthing_id(folder: &SharedWorkspaceFolder) -> String {
+    folder
+        .syncthing_folder_id
+        .clone()
+        .unwrap_or_else(|| syncthing_folder_id(&folder.id))
+}
+
+fn shared_workspace_folder_is_incoming(folder: &SharedWorkspaceFolder) -> bool {
+    folder.direction.trim().eq_ignore_ascii_case("incoming")
+}
+
+fn normalize_shared_folder_title(path: &str, raw: Option<String>) -> String {
+    normalize_optional_share_string(raw).unwrap_or_else(|| default_shared_folder_title(path))
+}
+
+fn dedupe_member_contact_ids(raw_ids: Vec<String>) -> Vec<String> {
+    let mut deduped = Vec::new();
+    for raw_id in raw_ids {
+        let trimmed = raw_id.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !deduped.iter().any(|existing| existing == trimmed) {
+            deduped.push(trimmed.to_string());
+        }
+    }
+    deduped
+}
+
+fn validate_shared_folder_members(
+    registry: &StoredShareRegistry,
+    member_contact_ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let deduped = dedupe_member_contact_ids(member_contact_ids);
+    if deduped.is_empty() {
+        return Err("Select at least one contact to share this folder with".to_string());
+    }
+    for contact_id in &deduped {
+        if !registry
+            .contacts
+            .iter()
+            .any(|contact| contact.id == *contact_id)
+        {
+            return Err(format!("Unknown share contact: {}", contact_id));
+        }
+    }
+    Ok(deduped)
 }
 
 fn gateway_ws_url() -> String {
@@ -9648,6 +11661,7 @@ pub async fn start_gateway(
     } else {
         "off"
     };
+    let onlyoffice_jwt_secret = load_or_create_onlyoffice_jwt_secret(&app)?;
 
     // Build docker run command - pass API keys as env vars
     let mut env_entries: Vec<(&str, &str)> = vec![
@@ -9685,6 +11699,26 @@ pub async fn start_gateway(
         ("ENTROPIC_BROWSER_BIND", "0.0.0.0"),
         ("ENTROPIC_BROWSER_PROFILE", "/data/browser/profile"),
         ("ENTROPIC_TOOLS_PATH", "/data/tools"),
+        (
+            "ENTROPIC_ONLYOFFICE_PUBLIC_BASE",
+            ONLYOFFICE_PUBLIC_BASE_URL,
+        ),
+        (
+            "ENTROPIC_ONLYOFFICE_INTERNAL_BASE",
+            ONLYOFFICE_INTERNAL_BASE_URL,
+        ),
+        (
+            "ENTROPIC_ONLYOFFICE_UPSTREAM_BASE",
+            ONLYOFFICE_UPSTREAM_BASE_URL,
+        ),
+        (
+            "ENTROPIC_ONLYOFFICE_JWT_SECRET",
+            onlyoffice_jwt_secret.as_str(),
+        ),
+        (
+            "ENTROPIC_ONLYOFFICE_USER_NAME",
+            settings.identity_name.as_str(),
+        ),
     ];
 
     // Anthropic: use ANTHROPIC_OAUTH_TOKEN for OAuth tokens (sk-ant-oat01-...), ANTHROPIC_API_KEY for regular keys
@@ -9924,6 +11958,8 @@ pub async fn start_gateway_with_proxy(
         startup_started.elapsed().as_millis()
     );
     let local_gateway_token = expected_gateway_token(&app)?;
+    let onlyoffice_jwt_secret = load_or_create_onlyoffice_jwt_secret(&app)?;
+    let onlyoffice_user_name = load_agent_settings(&app).identity_name;
     let build_proxy_docker_args = || -> Result<(Vec<String>, GatewayEnvFile), String> {
         let mut env_entries: Vec<(&str, &str)> = vec![
             ("OPENCLAW_GATEWAY_TOKEN", local_gateway_token.as_str()),
@@ -9960,6 +11996,26 @@ pub async fn start_gateway_with_proxy(
             ("ENTROPIC_BROWSER_BIND", "0.0.0.0"),
             ("ENTROPIC_BROWSER_PROFILE", "/data/browser/profile"),
             ("ENTROPIC_TOOLS_PATH", "/data/tools"),
+            (
+                "ENTROPIC_ONLYOFFICE_PUBLIC_BASE",
+                ONLYOFFICE_PUBLIC_BASE_URL,
+            ),
+            (
+                "ENTROPIC_ONLYOFFICE_INTERNAL_BASE",
+                ONLYOFFICE_INTERNAL_BASE_URL,
+            ),
+            (
+                "ENTROPIC_ONLYOFFICE_UPSTREAM_BASE",
+                ONLYOFFICE_UPSTREAM_BASE_URL,
+            ),
+            (
+                "ENTROPIC_ONLYOFFICE_JWT_SECRET",
+                onlyoffice_jwt_secret.as_str(),
+            ),
+            (
+                "ENTROPIC_ONLYOFFICE_USER_NAME",
+                onlyoffice_user_name.as_str(),
+            ),
         ];
         if let Some(image_model) = image_model.as_deref() {
             if !image_model.trim().is_empty() {
@@ -10978,6 +13034,9 @@ pub async fn set_capabilities(app: AppHandle, list: Vec<CapabilityState>) -> Res
         let mark = if cap.enabled { "x" } else { " " };
         body.push_str(&format!("- [{}] {}\n", mark, cap.label));
     }
+    body.push_str(
+        "\n## Office Files\n- Use `entropic-office spreadsheet todo /data/workspace/todo.xlsx \"Task 1\" \"Task 2\"` to create a workbook.\n- Use `entropic-office spreadsheet new /data/workspace/file.xlsx` for a blank workbook.\n- Use `entropic-office document new /data/workspace/file.docx` or `entropic-office document lines /data/workspace/file.docx \"Line 1\" \"Line 2\"` for docx files.\n",
+    );
     write_container_file(&workspace_file("TOOLS.md"), &body)?;
     let mut settings = load_agent_settings(&app);
     settings.capabilities = list;
@@ -13478,6 +15537,1591 @@ pub async fn upload_workspace_file(
         return Err("Failed to upload file to container".to_string());
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn get_onlyoffice_status() -> Result<OnlyOfficeStatus, String> {
+    if !named_gateway_container_exists(ONLYOFFICE_CONTAINER, true) {
+        return Ok(onlyoffice_status_from_error(None));
+    }
+    match wait_for_onlyoffice_health().await {
+        Ok(()) => match wait_for_onlyoffice_bridge_health().await {
+            Ok(()) => Ok(onlyoffice_status_from_error(None)),
+            Err(error) => Ok(onlyoffice_status_from_error(Some(error))),
+        },
+        Err(error) => Ok(onlyoffice_status_from_error(Some(error))),
+    }
+}
+
+#[tauri::command]
+pub async fn ensure_onlyoffice_ready(app: AppHandle) -> Result<OnlyOfficeStatus, String> {
+    start_onlyoffice_sidecar(&app).await?;
+    start_onlyoffice_bridge(app).await?;
+    Ok(onlyoffice_status_from_error(None))
+}
+
+fn ensure_shareable_workspace_folder(path: &str) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("Choose a workspace folder to share".to_string());
+    }
+    if !gateway_container_exists(true) {
+        return Ok(());
+    }
+    let full_path = format!("{}/{}", WORKSPACE_ROOT, path);
+    if !container_dir_exists(&full_path)? {
+        return Err(format!("Workspace folder not found: {}", path));
+    }
+    Ok(())
+}
+
+fn default_share_invite_display_name() -> String {
+    read_hostname()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Entropic Device".to_string())
+}
+
+fn sign_share_contact_invite_payload(
+    app: &AppHandle,
+    payload: &ShareContactInvitePayload,
+) -> Result<String, String> {
+    let identity = load_or_create_gateway_device_identity(app)?;
+    let private_key_bytes = URL_SAFE_NO_PAD
+        .decode(identity.private_key.as_bytes())
+        .map_err(|e| format!("Failed to decode gateway device private key: {}", e))?;
+    let signing_key = SigningKey::from_bytes(
+        &private_key_bytes
+            .try_into()
+            .map_err(|_| "Invalid gateway device private key length".to_string())?,
+    );
+    let payload_json = serde_json::to_string(payload)
+        .map_err(|e| format!("Failed to serialize share invite payload: {}", e))?;
+    Ok(URL_SAFE_NO_PAD.encode(signing_key.sign(payload_json.as_bytes()).to_bytes()))
+}
+
+fn verify_share_contact_invite_payload(
+    payload: &ShareContactInvitePayload,
+    signature: &str,
+) -> Result<(), String> {
+    let public_key_bytes = URL_SAFE_NO_PAD
+        .decode(payload.gateway_public_key.as_bytes())
+        .map_err(|e| format!("Failed to decode invite public key: {}", e))?;
+    let verifying_key = VerifyingKey::from_bytes(
+        &public_key_bytes
+            .try_into()
+            .map_err(|_| "Invalid invite public key length".to_string())?,
+    )
+    .map_err(|e| format!("Invalid invite public key: {}", e))?;
+    let signature_bytes = URL_SAFE_NO_PAD
+        .decode(signature.as_bytes())
+        .map_err(|e| format!("Failed to decode invite signature: {}", e))?;
+    let signature = Signature::from_bytes(
+        &signature_bytes
+            .try_into()
+            .map_err(|_| "Invalid invite signature length".to_string())?,
+    );
+    let payload_json = serde_json::to_string(payload)
+        .map_err(|e| format!("Failed to serialize share invite payload: {}", e))?;
+    verifying_key
+        .verify(payload_json.as_bytes(), &signature)
+        .map_err(|e| format!("Invite signature verification failed: {}", e))
+}
+
+fn normalize_share_directory_segment(raw: &str, fallback: &str) -> String {
+    sanitize_directory_name(raw)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            sanitize_directory_name(fallback)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| sanitize_filename(fallback))
+        })
+}
+
+fn short_device_label(device_id: &str) -> String {
+    let compact: String = device_id.chars().filter(|ch| *ch != '-').take(8).collect();
+    if compact.is_empty() {
+        "remote-device".to_string()
+    } else {
+        compact
+    }
+}
+
+fn syncthing_path_exists(path: &str) -> bool {
+    let script = format!("test -e {}", sh_single_quote(path));
+    docker_command()
+        .args(["exec", SYNCTHING_CONTAINER, "sh", "-lc", &script])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn contact_by_syncthing_device_id<'a>(
+    registry: &'a StoredShareRegistry,
+    device_id: &str,
+) -> Option<&'a ShareContact> {
+    registry.contacts.iter().find(|contact| {
+        contact
+            .syncthing_device_id
+            .as_deref()
+            .map(|value| value.eq_ignore_ascii_case(device_id))
+            .unwrap_or(false)
+    })
+}
+
+fn ensure_placeholder_contact_for_device(
+    registry: &mut StoredShareRegistry,
+    device_id: &str,
+    preferred_name: Option<&str>,
+    now: u64,
+) -> String {
+    if let Some(existing) = registry.contacts.iter().find(|contact| {
+        contact
+            .syncthing_device_id
+            .as_deref()
+            .map(|value| value.eq_ignore_ascii_case(device_id))
+            .unwrap_or(false)
+    }) {
+        return existing.id.clone();
+    }
+
+    let display_name = normalize_share_display_name(
+        preferred_name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "Remote Device"),
+    )
+    .unwrap_or_else(|_| format!("Remote {}", short_device_label(device_id)));
+    let contact = ShareContact {
+        id: unique_id(),
+        display_name,
+        syncthing_device_id: Some(device_id.to_string()),
+        gateway_device_id: None,
+        gateway_public_key: None,
+        invite_state: "device_only".to_string(),
+        last_seen_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    let id = contact.id.clone();
+    registry.contacts.push(contact);
+    id
+}
+
+fn build_incoming_offer_target_path(
+    registry: &StoredShareRegistry,
+    primary_contact_name: &str,
+    folder_label: &str,
+) -> String {
+    let owner_segment = normalize_share_directory_segment(primary_contact_name, "Shared With Me");
+    let folder_segment = normalize_share_directory_segment(folder_label, "Shared Folder");
+    let base = format!("shared/{}", owner_segment);
+    let mut candidate = format!("{}/{}", base, folder_segment);
+    let mut index = 2u32;
+    while registry
+        .folders
+        .iter()
+        .any(|folder| folder.path == candidate)
+        || syncthing_path_exists(&workspace_file(&candidate))
+    {
+        candidate = format!("{}/{} {}", base, folder_segment, index);
+        index += 1;
+    }
+    candidate
+}
+
+fn build_syncthing_incoming_folder_config(
+    template: &serde_json::Value,
+    existing: Option<&serde_json::Value>,
+    folder_id: &str,
+    label: &str,
+    path: &str,
+    local_device_id: &str,
+    remote_device_ids: &[String],
+) -> Result<serde_json::Value, String> {
+    let mut folder = existing.cloned().unwrap_or_else(|| template.clone());
+    let object = folder
+        .as_object_mut()
+        .ok_or_else(|| "Syncthing folder template is not an object".to_string())?;
+    object.insert(
+        "id".to_string(),
+        serde_json::Value::String(folder_id.to_string()),
+    );
+    object.insert(
+        "label".to_string(),
+        serde_json::Value::String(label.to_string()),
+    );
+    object.insert(
+        "path".to_string(),
+        serde_json::Value::String(workspace_file(path)),
+    );
+    object.insert(
+        "type".to_string(),
+        serde_json::Value::String("sendreceive".to_string()),
+    );
+    object.insert("paused".to_string(), serde_json::Value::Bool(false));
+
+    let mut device_ids = Vec::with_capacity(remote_device_ids.len() + 1);
+    device_ids.push(local_device_id.to_string());
+    device_ids.extend(remote_device_ids.iter().cloned());
+    device_ids.sort();
+    device_ids.dedup();
+    object.insert(
+        "devices".to_string(),
+        serde_json::Value::Array(
+            device_ids
+                .into_iter()
+                .map(|device_id| {
+                    serde_json::json!({
+                        "deviceID": device_id,
+                        "introducedBy": "",
+                        "encryptionPassword": "",
+                    })
+                })
+                .collect(),
+        ),
+    );
+    Ok(folder)
+}
+
+fn parse_syncthing_pending_folder_offers(
+    registry: &StoredShareRegistry,
+    pending_folders: &serde_json::Value,
+    connections_by_id: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<SyncthingIncomingFolderOffer> {
+    let Some(entries) = pending_folders.as_object() else {
+        return Vec::new();
+    };
+    let mut offers = Vec::new();
+    for (folder_id, details) in entries {
+        let offered_by = details
+            .get("offeredBy")
+            .and_then(serde_json::Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        if offered_by.is_empty() {
+            continue;
+        }
+
+        let mut peers = Vec::new();
+        let mut label = folder_id.clone();
+        let mut receive_encrypted = false;
+        let mut remote_encrypted = false;
+        let mut primary_name = "Shared With Me".to_string();
+
+        for (device_id, offer) in &offered_by {
+            if let Some(next_label) = json_string_field(offer, "label") {
+                label = next_label;
+            }
+            receive_encrypted |= json_bool_field(offer, "receiveEncrypted").unwrap_or(false);
+            remote_encrypted |= json_bool_field(offer, "remoteEncrypted").unwrap_or(false);
+            let contact = contact_by_syncthing_device_id(registry, device_id);
+            let display_name = contact
+                .map(|value| value.display_name.clone())
+                .unwrap_or_else(|| format!("Remote {}", short_device_label(device_id)));
+            if primary_name == "Shared With Me" {
+                primary_name = display_name.clone();
+            }
+            peers.push(SyncthingIncomingFolderPeer {
+                device_id: device_id.clone(),
+                contact_id: contact.map(|value| value.id.clone()),
+                display_name,
+                offered_at: json_string_field(offer, "time"),
+                connected: connections_by_id
+                    .get(device_id)
+                    .and_then(|value| json_bool_field(value, "connected"))
+                    .unwrap_or(false),
+            });
+        }
+
+        peers.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+        let has_unknown_peer = peers.iter().any(|peer| peer.contact_id.is_none());
+        let status = if receive_encrypted || remote_encrypted {
+            "encrypted_offer".to_string()
+        } else if has_unknown_peer {
+            "needs_contact".to_string()
+        } else {
+            "pending_accept".to_string()
+        };
+        let message = match status.as_str() {
+            "encrypted_offer" => Some(
+                "This offer uses Syncthing receive-encrypted mode, which Entropic does not configure yet."
+                    .to_string(),
+            ),
+            "needs_contact" => Some(
+                "Import this sender's invite first if you want their device to appear by name after acceptance."
+                    .to_string(),
+            ),
+            _ => None,
+        };
+        offers.push(SyncthingIncomingFolderOffer {
+            folder_id: folder_id.clone(),
+            label: label.clone(),
+            target_path: build_incoming_offer_target_path(registry, &primary_name, &label),
+            status,
+            receive_encrypted,
+            remote_encrypted,
+            peers,
+            message,
+        });
+    }
+    offers.sort_by(|left, right| left.label.cmp(&right.label));
+    offers
+}
+
+async fn canonicalize_syncthing_device_id(app: &AppHandle, raw: &str) -> Result<String, String> {
+    let mut url = syncthing_api_url("/rest/svc/deviceid")?;
+    url.query_pairs_mut().append_pair("id", raw);
+    let response = syncthing_request_json_url(app, reqwest::Method::GET, url, None).await?;
+    if let Some(device_id) = json_string_field(&response, "id") {
+        return Ok(device_id);
+    }
+    Err(json_string_field(&response, "error")
+        .unwrap_or_else(|| "Syncthing rejected the device ID".to_string()))
+}
+
+async fn sync_syncthing_share_registry(app: &AppHandle) -> Result<(), String> {
+    let mut registry = load_share_registry(app);
+    let now = current_millis_u64();
+    let system_status =
+        syncthing_request_json(app, reqwest::Method::GET, "/rest/system/status", None).await?;
+    let local_device_id = json_string_field(&system_status, "myID")
+        .ok_or_else(|| "Syncthing did not report a local device ID".to_string())?;
+    let device_template = syncthing_request_json(
+        app,
+        reqwest::Method::GET,
+        "/rest/config/defaults/device",
+        None,
+    )
+    .await?;
+    let folder_template = syncthing_request_json(
+        app,
+        reqwest::Method::GET,
+        "/rest/config/defaults/folder",
+        None,
+    )
+    .await?;
+    let configured_devices: Vec<serde_json::Value> = serde_json::from_value(
+        syncthing_request_json(app, reqwest::Method::GET, "/rest/config/devices", None).await?,
+    )
+    .map_err(|e| format!("Failed to decode Syncthing devices config: {}", e))?;
+    let configured_folders: Vec<serde_json::Value> = serde_json::from_value(
+        syncthing_request_json(app, reqwest::Method::GET, "/rest/config/folders", None).await?,
+    )
+    .map_err(|e| format!("Failed to decode Syncthing folders config: {}", e))?;
+
+    let existing_devices_by_id: HashMap<String, serde_json::Value> = configured_devices
+        .iter()
+        .filter_map(|device| json_string_field(device, "deviceID").map(|id| (id, device.clone())))
+        .collect();
+    let existing_folders_by_id: HashMap<String, serde_json::Value> = configured_folders
+        .iter()
+        .filter_map(|folder| json_string_field(folder, "id").map(|id| (id, folder.clone())))
+        .collect();
+
+    let mut contact_device_ids = HashMap::new();
+    let mut registry_changed = false;
+    for contact in &mut registry.contacts {
+        let raw_device_id = normalize_optional_share_string(contact.syncthing_device_id.clone());
+        match raw_device_id {
+            None => {
+                if contact.invite_state != "pending_device_id" {
+                    contact.invite_state = "pending_device_id".to_string();
+                    contact.updated_at = now;
+                    registry_changed = true;
+                }
+            }
+            Some(raw_device_id) => {
+                match canonicalize_syncthing_device_id(app, &raw_device_id).await {
+                    Ok(canonical_device_id) => {
+                        if contact.syncthing_device_id.as_deref()
+                            != Some(canonical_device_id.as_str())
+                        {
+                            contact.syncthing_device_id = Some(canonical_device_id.clone());
+                            contact.updated_at = now;
+                            registry_changed = true;
+                        }
+                        if canonical_device_id == local_device_id {
+                            if contact.invite_state != "self_device" {
+                                contact.invite_state = "self_device".to_string();
+                                contact.updated_at = now;
+                                registry_changed = true;
+                            }
+                            continue;
+                        }
+                        if contact.invite_state != "ready" {
+                            contact.invite_state = "ready".to_string();
+                            contact.updated_at = now;
+                            registry_changed = true;
+                        }
+                        let device_config = build_syncthing_device_config(
+                            &device_template,
+                            existing_devices_by_id.get(&canonical_device_id),
+                            &canonical_device_id,
+                            &contact.display_name,
+                        )?;
+                        syncthing_request_json(
+                            app,
+                            reqwest::Method::POST,
+                            "/rest/config/devices",
+                            Some(device_config),
+                        )
+                        .await?;
+                        contact_device_ids.insert(contact.id.clone(), canonical_device_id);
+                    }
+                    Err(error) => {
+                        if contact.invite_state != "invalid_device_id" {
+                            contact.invite_state = "invalid_device_id".to_string();
+                            contact.updated_at = now;
+                            registry_changed = true;
+                        }
+                        eprintln!(
+                            "[syncthing] Contact {} has invalid device ID {:?}: {}",
+                            contact.display_name, contact.syncthing_device_id, error
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    for configured_folder in &configured_folders {
+        if json_string_field(configured_folder, "id").as_deref() == Some("default") {
+            let _ = syncthing_request_json(
+                app,
+                reqwest::Method::DELETE,
+                "/rest/config/folders/default",
+                None,
+            )
+            .await;
+        }
+    }
+
+    let desired_folder_ids: HashSet<String> = registry
+        .folders
+        .iter()
+        .filter(|folder| !shared_workspace_folder_is_incoming(folder))
+        .map(shared_workspace_folder_syncthing_id)
+        .collect();
+    for configured_folder in &configured_folders {
+        if let Some(folder_id) = json_string_field(configured_folder, "id") {
+            if folder_id.starts_with(SYNCTHING_MANAGED_FOLDER_PREFIX)
+                && !desired_folder_ids.contains(&folder_id)
+            {
+                let _ = syncthing_request_json(
+                    app,
+                    reqwest::Method::DELETE,
+                    format!("/rest/config/folders/{}", folder_id).as_str(),
+                    None,
+                )
+                .await;
+            }
+        }
+    }
+
+    for folder in &mut registry.folders {
+        if shared_workspace_folder_is_incoming(folder) {
+            continue;
+        }
+        let folder_config_id = shared_workspace_folder_syncthing_id(folder);
+        let member_device_ids: Vec<String> = folder
+            .members
+            .iter()
+            .filter_map(|member| contact_device_ids.get(&member.contact_id).cloned())
+            .collect();
+
+        if member_device_ids.is_empty() {
+            folder.sync_status = "pending_device_ids".to_string();
+            if existing_folders_by_id.contains_key(&folder_config_id) {
+                let _ = syncthing_request_json(
+                    app,
+                    reqwest::Method::DELETE,
+                    format!("/rest/config/folders/{}", folder_config_id).as_str(),
+                    None,
+                )
+                .await;
+            }
+            continue;
+        }
+
+        let full_path = workspace_file(&folder.path);
+        docker_exec_output(&["exec", SYNCTHING_CONTAINER, "mkdir", "-p", "--", &full_path])?;
+        let folder_config = build_syncthing_folder_config(
+            &folder_template,
+            existing_folders_by_id.get(&folder_config_id),
+            folder,
+            &local_device_id,
+            &member_device_ids,
+        )?;
+        syncthing_request_json(
+            app,
+            reqwest::Method::POST,
+            "/rest/config/folders",
+            Some(folder_config),
+        )
+        .await?;
+        let mut scan_url = syncthing_api_url("/rest/db/scan")?;
+        scan_url
+            .query_pairs_mut()
+            .append_pair("folder", folder_config_id.as_str());
+        let _ = syncthing_request_json_url(app, reqwest::Method::POST, scan_url, None).await;
+    }
+
+    if registry_changed {
+        save_share_registry(app, &registry)?;
+    }
+
+    Ok(())
+}
+
+async fn build_syncthing_share_status_snapshot(
+    app: &AppHandle,
+) -> Result<SyncthingShareStatusSnapshot, String> {
+    let registry = load_share_registry(app);
+    let running = named_gateway_container_exists(SYNCTHING_CONTAINER, true);
+    if !running {
+        return Ok(syncthing_status_snapshot_from_registry(
+            &registry, false, false, None,
+        ));
+    }
+    if let Err(error) = wait_for_syncthing_noauth_health().await {
+        return Ok(syncthing_status_snapshot_from_registry(
+            &registry,
+            true,
+            false,
+            Some(error),
+        ));
+    }
+    if let Err(error) = wait_for_syncthing_api_key(app).await {
+        return Ok(syncthing_status_snapshot_from_registry(
+            &registry,
+            true,
+            false,
+            Some(error),
+        ));
+    }
+
+    let system_status =
+        syncthing_request_json(app, reqwest::Method::GET, "/rest/system/status", None).await?;
+    let local_device_id = json_string_field(&system_status, "myID");
+    let version = syncthing_request_json(app, reqwest::Method::GET, "/rest/system/version", None)
+        .await
+        .ok()
+        .and_then(|value| {
+            json_string_field(&value, "version")
+                .or_else(|| json_string_field(&value, "longVersion"))
+        });
+    let configured_devices: Vec<serde_json::Value> = serde_json::from_value(
+        syncthing_request_json(app, reqwest::Method::GET, "/rest/config/devices", None).await?,
+    )
+    .map_err(|e| format!("Failed to decode Syncthing devices config: {}", e))?;
+    let configured_folders: Vec<serde_json::Value> = serde_json::from_value(
+        syncthing_request_json(app, reqwest::Method::GET, "/rest/config/folders", None).await?,
+    )
+    .map_err(|e| format!("Failed to decode Syncthing folders config: {}", e))?;
+    let connections =
+        syncthing_request_json(app, reqwest::Method::GET, "/rest/system/connections", None)
+            .await
+            .unwrap_or(serde_json::Value::Null);
+    let device_stats =
+        syncthing_request_json(app, reqwest::Method::GET, "/rest/stats/device", None)
+            .await
+            .unwrap_or(serde_json::Value::Null);
+    let folder_stats =
+        syncthing_request_json(app, reqwest::Method::GET, "/rest/stats/folder", None)
+            .await
+            .unwrap_or(serde_json::Value::Null);
+    let pending_folders = syncthing_request_json(
+        app,
+        reqwest::Method::GET,
+        "/rest/cluster/pending/folders",
+        None,
+    )
+    .await
+    .unwrap_or(serde_json::Value::Null);
+
+    let configured_devices_by_id: HashMap<String, serde_json::Value> = configured_devices
+        .into_iter()
+        .filter_map(|device| json_string_field(&device, "deviceID").map(|id| (id, device)))
+        .collect();
+    let configured_folders_by_id: HashMap<String, serde_json::Value> = configured_folders
+        .into_iter()
+        .filter_map(|folder| json_string_field(&folder, "id").map(|id| (id, folder)))
+        .collect();
+    let connections_by_id = connections
+        .get("connections")
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .or_else(|| connections.as_object().cloned())
+        .unwrap_or_default();
+    let device_stats_by_id = device_stats.as_object().cloned().unwrap_or_default();
+    let folder_stats_by_id = folder_stats.as_object().cloned().unwrap_or_default();
+    let incoming_offers =
+        parse_syncthing_pending_folder_offers(&registry, &pending_folders, &connections_by_id);
+    let contacts_by_id: HashMap<String, ShareContact> = registry
+        .contacts
+        .iter()
+        .cloned()
+        .map(|contact| (contact.id.clone(), contact))
+        .collect();
+
+    let contacts = registry
+        .contacts
+        .iter()
+        .map(|contact| {
+            let device_id = normalize_optional_share_string(contact.syncthing_device_id.clone());
+            match device_id.as_deref() {
+                None => SyncthingShareContactStatus {
+                    contact_id: contact.id.clone(),
+                    display_name: contact.display_name.clone(),
+                    device_id: None,
+                    invite_state: contact.invite_state.clone(),
+                    status: "pending_device_id".to_string(),
+                    configured: false,
+                    connected: false,
+                    address: None,
+                    connection_type: None,
+                    last_seen: None,
+                    message: Some("Add the remote Syncthing device ID to connect this contact.".to_string()),
+                },
+                Some(device_id) if local_device_id.as_deref() == Some(device_id) => {
+                    SyncthingShareContactStatus {
+                        contact_id: contact.id.clone(),
+                        display_name: contact.display_name.clone(),
+                        device_id: Some(device_id.to_string()),
+                        invite_state: contact.invite_state.clone(),
+                        status: "self_device".to_string(),
+                        configured: false,
+                        connected: false,
+                        address: None,
+                        connection_type: None,
+                        last_seen: None,
+                        message: Some("This contact points at the current device. Use the remote device ID instead.".to_string()),
+                    }
+                }
+                Some(device_id) => {
+                    let configured = configured_devices_by_id.contains_key(device_id);
+                    let connection = connections_by_id.get(device_id);
+                    let connected = connection
+                        .and_then(|value| json_bool_field(value, "connected"))
+                        .unwrap_or(false);
+                    let status = if contact.invite_state == "invalid_device_id" {
+                        "invalid_device_id".to_string()
+                    } else if !configured {
+                        "pending_setup".to_string()
+                    } else if connected {
+                        "connected".to_string()
+                    } else {
+                        "offline".to_string()
+                    };
+                    let message = match status.as_str() {
+                        "invalid_device_id" => {
+                            Some("Syncthing rejected this device ID. Re-enter it in canonical format.".to_string())
+                        }
+                        "pending_setup" => Some(
+                            "The device ID is saved locally but has not been applied to Syncthing yet."
+                                .to_string(),
+                        ),
+                        "offline" => Some(
+                            "The device is configured but is not currently connected.".to_string(),
+                        ),
+                        _ => None,
+                    };
+                    SyncthingShareContactStatus {
+                        contact_id: contact.id.clone(),
+                        display_name: contact.display_name.clone(),
+                        device_id: Some(device_id.to_string()),
+                        invite_state: contact.invite_state.clone(),
+                        status,
+                        configured,
+                        connected,
+                        address: connection.and_then(|value| json_string_field(value, "address")),
+                        connection_type: connection
+                            .and_then(|value| json_string_field(value, "type")),
+                        last_seen: device_stats_by_id
+                            .get(device_id)
+                            .and_then(|value| json_string_field(value, "lastSeen")),
+                        message,
+                    }
+                }
+            }
+        })
+        .collect();
+
+    let mut folders = Vec::with_capacity(registry.folders.len());
+    for share in &registry.folders {
+        let folder_id = shared_workspace_folder_syncthing_id(share);
+        let member_device_ids: Vec<String> = share
+            .members
+            .iter()
+            .filter_map(|member| {
+                contacts_by_id.get(&member.contact_id).and_then(|contact| {
+                    normalize_optional_share_string(contact.syncthing_device_id.clone())
+                })
+            })
+            .filter(|device_id| local_device_id.as_deref() != Some(device_id.as_str()))
+            .collect();
+
+        if member_device_ids.is_empty() {
+            folders.push(SyncthingSharedFolderStatus {
+                share_id: share.id.clone(),
+                path: share.path.clone(),
+                title: share.title.clone(),
+                status: "pending_device_ids".to_string(),
+                state: None,
+                configured_member_count: 0,
+                connected_member_count: 0,
+                need_items: 0,
+                need_bytes: 0,
+                pull_errors: 0,
+                last_scan: None,
+                last_file_at: None,
+                message: Some(if shared_workspace_folder_is_incoming(share) {
+                    "This incoming folder is missing mapped remote devices in the local registry."
+                        .to_string()
+                } else {
+                    "Add at least one valid remote Syncthing device ID for this shared folder."
+                        .to_string()
+                }),
+            });
+            continue;
+        }
+
+        let configured_folder = configured_folders_by_id.get(&folder_id);
+        if configured_folder.is_none() {
+            folders.push(SyncthingSharedFolderStatus {
+                share_id: share.id.clone(),
+                path: share.path.clone(),
+                title: share.title.clone(),
+                status: "pending_setup".to_string(),
+                state: None,
+                configured_member_count: member_device_ids.len(),
+                connected_member_count: 0,
+                need_items: 0,
+                need_bytes: 0,
+                pull_errors: 0,
+                last_scan: None,
+                last_file_at: None,
+                message: Some(if shared_workspace_folder_is_incoming(share) {
+                    "This accepted incoming folder is not configured in Syncthing right now."
+                        .to_string()
+                } else {
+                    "This shared folder has not been pushed into Syncthing yet.".to_string()
+                }),
+            });
+            continue;
+        }
+
+        let mut db_status_url = syncthing_api_url("/rest/db/status")?;
+        db_status_url
+            .query_pairs_mut()
+            .append_pair("folder", folder_id.as_str());
+        let db_status = syncthing_request_json_url(app, reqwest::Method::GET, db_status_url, None)
+            .await
+            .unwrap_or(serde_json::Value::Null);
+
+        let mut folder_errors_url = syncthing_api_url("/rest/folder/errors")?;
+        folder_errors_url
+            .query_pairs_mut()
+            .append_pair("folder", folder_id.as_str())
+            .append_pair("perpage", "5");
+        let folder_errors =
+            syncthing_request_json_url(app, reqwest::Method::GET, folder_errors_url, None)
+                .await
+                .unwrap_or(serde_json::Value::Null);
+
+        let mut connected_member_count = 0usize;
+        let mut pending_accept_count = 0usize;
+        let mut paused_member_count = 0usize;
+        for device_id in &member_device_ids {
+            if connections_by_id
+                .get(device_id)
+                .and_then(|value| json_bool_field(value, "connected"))
+                .unwrap_or(false)
+            {
+                connected_member_count += 1;
+            }
+            let mut completion_url = syncthing_api_url("/rest/db/completion")?;
+            completion_url
+                .query_pairs_mut()
+                .append_pair("folder", folder_id.as_str())
+                .append_pair("device", device_id.as_str());
+            let completion =
+                syncthing_request_json_url(app, reqwest::Method::GET, completion_url, None)
+                    .await
+                    .unwrap_or(serde_json::Value::Null);
+            match json_string_field(&completion, "remoteState").as_deref() {
+                Some("notSharing") => pending_accept_count += 1,
+                Some("paused") => paused_member_count += 1,
+                _ => {}
+            }
+        }
+
+        let need_files = json_u64_field(&db_status, "needFiles").unwrap_or(0);
+        let need_directories = json_u64_field(&db_status, "needDirectories").unwrap_or(0);
+        let need_deletes = json_u64_field(&db_status, "needDeletes").unwrap_or(0);
+        let need_items = json_u64_field(&db_status, "needItems")
+            .unwrap_or(need_files + need_directories + need_deletes);
+        let need_bytes = json_u64_field(&db_status, "needBytes").unwrap_or(0);
+        let state = json_string_field(&db_status, "state");
+        let pull_errors = folder_errors
+            .get("errors")
+            .and_then(serde_json::Value::as_array)
+            .map(|errors| errors.len())
+            .unwrap_or(0);
+        let last_scan = folder_stats_by_id
+            .get(&folder_id)
+            .and_then(|value| json_string_field(value, "lastScan"));
+        let last_file_at = folder_stats_by_id
+            .get(&folder_id)
+            .and_then(|value| json_string_field(value, "lastFileAt"));
+        let paused = configured_folder
+            .and_then(|value| json_bool_field(value, "paused"))
+            .unwrap_or(false);
+        let status = if paused || paused_member_count > 0 || state.as_deref() == Some("paused") {
+            "paused"
+        } else if pending_accept_count > 0 {
+            "pending_accept"
+        } else if pull_errors > 0 {
+            "error"
+        } else if need_items > 0
+            || need_bytes > 0
+            || state
+                .as_deref()
+                .map(|value| value.contains("sync") || value.contains("scan"))
+                .unwrap_or(false)
+        {
+            "syncing"
+        } else if connected_member_count == 0 {
+            "offline"
+        } else {
+            "ready"
+        };
+        let message = match status {
+            "paused" => Some("This shared folder is paused on at least one side.".to_string()),
+            "pending_accept" => Some(if shared_workspace_folder_is_incoming(share) {
+                "A remote device connected to this incoming folder is not fully sharing back yet."
+                    .to_string()
+            } else {
+                "A remote device has not accepted this folder yet. The other Entropic install still needs to trust this device and folder."
+                    .to_string()
+            }),
+            "error" => Some("Syncthing reported scan or pull errors for this folder.".to_string()),
+            "offline" => Some(
+                "The folder is configured, but none of its remote devices are connected right now."
+                    .to_string(),
+            ),
+            _ => None,
+        };
+        folders.push(SyncthingSharedFolderStatus {
+            share_id: share.id.clone(),
+            path: share.path.clone(),
+            title: share.title.clone(),
+            status: status.to_string(),
+            state,
+            configured_member_count: member_device_ids.len(),
+            connected_member_count,
+            need_items,
+            need_bytes,
+            pull_errors,
+            last_scan,
+            last_file_at,
+            message,
+        });
+    }
+
+    Ok(SyncthingShareStatusSnapshot {
+        running: true,
+        ready: true,
+        local_device_id,
+        version,
+        gui_url: syncthing_gui_url(),
+        warning: Some(syncthing_warning_message()),
+        error: None,
+        contacts,
+        folders,
+        incoming_offers,
+    })
+}
+
+fn persist_syncthing_folder_statuses(
+    app: &AppHandle,
+    snapshot: &SyncthingShareStatusSnapshot,
+) -> Result<(), String> {
+    let mut registry = load_share_registry(app);
+    let status_by_share_id: HashMap<String, String> = snapshot
+        .folders
+        .iter()
+        .map(|folder| (folder.share_id.clone(), folder.status.clone()))
+        .collect();
+    let now = current_millis_u64();
+    let mut changed = false;
+    for folder in &mut registry.folders {
+        if let Some(status) = status_by_share_id.get(&folder.id) {
+            if folder.sync_status != *status {
+                folder.sync_status = status.clone();
+                folder.updated_at = now;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        save_share_registry(app, &registry)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_share_contacts(app: AppHandle) -> Result<Vec<ShareContact>, String> {
+    let mut registry = load_share_registry(&app);
+    registry.contacts.sort_by(|left, right| {
+        left.display_name
+            .to_ascii_lowercase()
+            .cmp(&right.display_name.to_ascii_lowercase())
+            .then_with(|| left.created_at.cmp(&right.created_at))
+    });
+    Ok(registry.contacts)
+}
+
+#[tauri::command]
+pub async fn save_share_contact(
+    app: AppHandle,
+    contact_id: Option<String>,
+    display_name: String,
+    syncthing_device_id: Option<String>,
+) -> Result<ShareContact, String> {
+    let mut registry = load_share_registry(&app);
+    let now = current_millis_u64();
+    let normalized_name = normalize_share_display_name(&display_name)?;
+    let normalized_device_id = normalize_optional_share_string(syncthing_device_id);
+    let invite_state = if normalized_device_id.is_some() {
+        "ready".to_string()
+    } else {
+        "pending_device_id".to_string()
+    };
+
+    if let Some(existing_id) = normalize_optional_share_string(contact_id) {
+        let contact = registry
+            .contacts
+            .iter_mut()
+            .find(|contact| contact.id == existing_id)
+            .ok_or_else(|| "Share contact not found".to_string())?;
+        contact.display_name = normalized_name;
+        contact.syncthing_device_id = normalized_device_id;
+        contact.invite_state = invite_state;
+        contact.updated_at = now;
+        let result = contact.clone();
+        save_share_registry(&app, &registry)?;
+        return Ok(result);
+    }
+
+    let contact = ShareContact {
+        id: unique_id(),
+        display_name: normalized_name,
+        syncthing_device_id: normalized_device_id,
+        gateway_device_id: None,
+        gateway_public_key: None,
+        invite_state,
+        last_seen_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    registry.contacts.push(contact.clone());
+    save_share_registry(&app, &registry)?;
+    Ok(contact)
+}
+
+#[tauri::command]
+pub async fn delete_share_contact(app: AppHandle, contact_id: String) -> Result<(), String> {
+    let normalized_contact_id = normalize_share_id(&contact_id, "Contact id")?;
+    let mut registry = load_share_registry(&app);
+    let contact_count_before = registry.contacts.len();
+    registry
+        .contacts
+        .retain(|contact| contact.id != normalized_contact_id);
+    if registry.contacts.len() == contact_count_before {
+        return Err("Share contact not found".to_string());
+    }
+
+    let now = current_millis_u64();
+    for folder in &mut registry.folders {
+        let member_count_before = folder.members.len();
+        folder
+            .members
+            .retain(|member| member.contact_id != normalized_contact_id);
+        if folder.members.len() != member_count_before {
+            folder.updated_at = now;
+        }
+    }
+    let removed_folders: Vec<SharedWorkspaceFolder> = registry
+        .folders
+        .iter()
+        .filter(|folder| folder.members.is_empty())
+        .cloned()
+        .collect();
+    registry.folders.retain(|folder| !folder.members.is_empty());
+    save_share_registry(&app, &registry)?;
+    if named_gateway_container_exists(SYNCTHING_CONTAINER, true) {
+        for folder in removed_folders {
+            let folder_id = shared_workspace_folder_syncthing_id(&folder);
+            let _ = syncthing_request_json(
+                &app,
+                reqwest::Method::DELETE,
+                format!("/rest/config/folders/{}", folder_id).as_str(),
+                None,
+            )
+            .await;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_shared_workspace_folders(
+    app: AppHandle,
+) -> Result<Vec<SharedWorkspaceFolder>, String> {
+    let mut registry = load_share_registry(&app);
+    registry.folders.sort_by(|left, right| {
+        left.path
+            .to_ascii_lowercase()
+            .cmp(&right.path.to_ascii_lowercase())
+            .then_with(|| left.created_at.cmp(&right.created_at))
+    });
+    Ok(registry.folders)
+}
+
+#[tauri::command]
+pub async fn get_shared_workspace_folder(
+    app: AppHandle,
+    path: String,
+) -> Result<Option<SharedWorkspaceFolder>, String> {
+    let sanitized_path = sanitize_workspace_path(&path)?;
+    if sanitized_path.is_empty() {
+        return Ok(None);
+    }
+    let registry = load_share_registry(&app);
+    Ok(registry
+        .folders
+        .into_iter()
+        .find(|folder| folder.path == sanitized_path))
+}
+
+#[tauri::command]
+pub async fn save_shared_workspace_folder(
+    app: AppHandle,
+    path: String,
+    title: Option<String>,
+    member_contact_ids: Vec<String>,
+) -> Result<SharedWorkspaceFolder, String> {
+    let sanitized_path = sanitize_workspace_path(&path)?;
+    if sanitized_path.is_empty() {
+        return Err("Choose a workspace folder to share".to_string());
+    }
+    ensure_shareable_workspace_folder(&sanitized_path)?;
+
+    let mut registry = load_share_registry(&app);
+    let validated_member_ids = validate_shared_folder_members(&registry, member_contact_ids)?;
+    let now = current_millis_u64();
+    let normalized_title = normalize_shared_folder_title(&sanitized_path, title);
+
+    if let Some(existing) = registry
+        .folders
+        .iter_mut()
+        .find(|folder| folder.path == sanitized_path)
+    {
+        if shared_workspace_folder_is_incoming(existing) {
+            return Err(
+                "This folder was accepted from a remote share and cannot be edited as an outgoing share."
+                    .to_string(),
+            );
+        }
+        let existing_added_at_by_contact: HashMap<String, u64> = existing
+            .members
+            .iter()
+            .map(|member| (member.contact_id.clone(), member.added_at))
+            .collect();
+        existing.title = normalized_title;
+        existing.members = validated_member_ids
+            .into_iter()
+            .map(|contact_id| SharedFolderMember {
+                added_at: existing_added_at_by_contact
+                    .get(&contact_id)
+                    .copied()
+                    .unwrap_or(now),
+                contact_id,
+            })
+            .collect();
+        existing.direction = default_shared_folder_direction();
+        existing.syncthing_folder_id = Some(syncthing_folder_id(&existing.id));
+        existing.updated_at = now;
+        let result = existing.clone();
+        save_share_registry(&app, &registry)?;
+        return Ok(result);
+    }
+
+    let folder = SharedWorkspaceFolder {
+        id: unique_id(),
+        path: sanitized_path,
+        title: normalized_title,
+        members: validated_member_ids
+            .into_iter()
+            .map(|contact_id| SharedFolderMember {
+                contact_id,
+                added_at: now,
+            })
+            .collect(),
+        direction: default_shared_folder_direction(),
+        syncthing_folder_id: None,
+        sync_status: "pending_setup".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    registry.folders.push(folder.clone());
+    save_share_registry(&app, &registry)?;
+    Ok(folder)
+}
+
+#[tauri::command]
+pub async fn delete_shared_workspace_folder(
+    app: AppHandle,
+    share_id: String,
+) -> Result<(), String> {
+    let normalized_share_id = normalize_share_id(&share_id, "Share id")?;
+    let mut registry = load_share_registry(&app);
+    let removed_folder = registry
+        .folders
+        .iter()
+        .find(|folder| folder.id == normalized_share_id)
+        .cloned();
+    let Some(removed_folder) = removed_folder else {
+        return Err("Shared folder not found".to_string());
+    };
+    registry
+        .folders
+        .retain(|folder| folder.id != normalized_share_id);
+    save_share_registry(&app, &registry)?;
+    if named_gateway_container_exists(SYNCTHING_CONTAINER, true) {
+        let folder_id = shared_workspace_folder_syncthing_id(&removed_folder);
+        let _ = syncthing_request_json(
+            &app,
+            reqwest::Method::DELETE,
+            format!("/rest/config/folders/{}", folder_id).as_str(),
+            None,
+        )
+        .await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn generate_share_contact_invite(
+    app: AppHandle,
+    display_name: Option<String>,
+) -> Result<ShareContactInvite, String> {
+    let _guard = syncthing_sync_lock().lock().await;
+    start_syncthing_sidecar(&app).await?;
+    let system_status =
+        syncthing_request_json(&app, reqwest::Method::GET, "/rest/system/status", None).await?;
+    let syncthing_device_id = json_string_field(&system_status, "myID")
+        .ok_or_else(|| "Syncthing did not report a local device ID".to_string())?;
+    let identity = load_or_create_gateway_device_identity(&app)?;
+    let invite_display_name_raw = display_name.unwrap_or_else(default_share_invite_display_name);
+    let invite_display_name = normalize_share_display_name(&invite_display_name_raw)?;
+    let payload = ShareContactInvitePayload {
+        version: 1,
+        kind: "syncthing_contact_invite".to_string(),
+        display_name: invite_display_name.clone(),
+        syncthing_device_id: syncthing_device_id.clone(),
+        gateway_device_id: identity.device_id.clone(),
+        gateway_public_key: identity.public_key.clone(),
+        created_at: current_millis_u64(),
+    };
+    let signature = sign_share_contact_invite_payload(&app, &payload)?;
+    let token = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&ShareContactInviteEnvelope {
+            payload: payload.clone(),
+            signature,
+        })
+        .map_err(|e| format!("Failed to serialize share invite: {}", e))?,
+    );
+    Ok(ShareContactInvite {
+        token,
+        display_name: payload.display_name,
+        syncthing_device_id: payload.syncthing_device_id,
+        gateway_device_id: payload.gateway_device_id,
+        created_at: payload.created_at,
+    })
+}
+
+#[tauri::command]
+pub async fn import_share_contact_invite(
+    app: AppHandle,
+    token: String,
+) -> Result<ShareContact, String> {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return Err("Paste a share invite token first".to_string());
+    }
+    let decoded = URL_SAFE_NO_PAD
+        .decode(trimmed.as_bytes())
+        .map_err(|e| format!("Failed to decode share invite token: {}", e))?;
+    let envelope: ShareContactInviteEnvelope = serde_json::from_slice(&decoded)
+        .map_err(|e| format!("Failed to parse share invite token: {}", e))?;
+    if envelope.payload.version != 1 || envelope.payload.kind != "syncthing_contact_invite" {
+        return Err("Unsupported share invite format".to_string());
+    }
+    verify_share_contact_invite_payload(&envelope.payload, &envelope.signature)?;
+
+    let local_identity = load_or_create_gateway_device_identity(&app)?;
+    if envelope.payload.gateway_device_id == local_identity.device_id {
+        return Err("This share invite belongs to the current device".to_string());
+    }
+
+    let normalized_display_name = normalize_share_display_name(&envelope.payload.display_name)?;
+    let normalized_syncthing_device_id =
+        normalize_optional_share_string(Some(envelope.payload.syncthing_device_id.clone()));
+    let normalized_gateway_device_id =
+        normalize_optional_share_string(Some(envelope.payload.gateway_device_id.clone()));
+    let normalized_gateway_public_key =
+        normalize_optional_share_string(Some(envelope.payload.gateway_public_key.clone()));
+    let now = current_millis_u64();
+    let mut registry = load_share_registry(&app);
+
+    if let Some(contact) = registry.contacts.iter_mut().find(|contact| {
+        normalized_gateway_device_id
+            .as_deref()
+            .map(|device_id| contact.gateway_device_id.as_deref() == Some(device_id))
+            .unwrap_or(false)
+            || normalized_syncthing_device_id
+                .as_deref()
+                .map(|device_id| contact.syncthing_device_id.as_deref() == Some(device_id))
+                .unwrap_or(false)
+    }) {
+        contact.display_name = normalized_display_name;
+        contact.syncthing_device_id = normalized_syncthing_device_id;
+        contact.gateway_device_id = normalized_gateway_device_id;
+        contact.gateway_public_key = normalized_gateway_public_key;
+        contact.invite_state = "ready".to_string();
+        contact.updated_at = now;
+        let result = contact.clone();
+        save_share_registry(&app, &registry)?;
+        return Ok(result);
+    }
+
+    let contact = ShareContact {
+        id: unique_id(),
+        display_name: normalized_display_name,
+        syncthing_device_id: normalized_syncthing_device_id,
+        gateway_device_id: normalized_gateway_device_id,
+        gateway_public_key: normalized_gateway_public_key,
+        invite_state: "ready".to_string(),
+        last_seen_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    registry.contacts.push(contact.clone());
+    save_share_registry(&app, &registry)?;
+    Ok(contact)
+}
+
+#[tauri::command]
+pub async fn accept_syncthing_incoming_folder_offer(
+    app: AppHandle,
+    folder_id: String,
+) -> Result<AcceptedSyncthingIncomingFolder, String> {
+    let normalized_folder_id = normalize_share_id(&folder_id, "Folder id")?;
+    let _guard = syncthing_sync_lock().lock().await;
+    start_syncthing_sidecar(&app).await?;
+    sync_syncthing_share_registry(&app).await?;
+
+    let system_status =
+        syncthing_request_json(&app, reqwest::Method::GET, "/rest/system/status", None).await?;
+    let local_device_id = json_string_field(&system_status, "myID")
+        .ok_or_else(|| "Syncthing did not report a local device ID".to_string())?;
+    let device_template = syncthing_request_json(
+        &app,
+        reqwest::Method::GET,
+        "/rest/config/defaults/device",
+        None,
+    )
+    .await?;
+    let folder_template = syncthing_request_json(
+        &app,
+        reqwest::Method::GET,
+        "/rest/config/defaults/folder",
+        None,
+    )
+    .await?;
+    let configured_devices: Vec<serde_json::Value> = serde_json::from_value(
+        syncthing_request_json(&app, reqwest::Method::GET, "/rest/config/devices", None).await?,
+    )
+    .map_err(|e| format!("Failed to decode Syncthing devices config: {}", e))?;
+    let configured_folders: Vec<serde_json::Value> = serde_json::from_value(
+        syncthing_request_json(&app, reqwest::Method::GET, "/rest/config/folders", None).await?,
+    )
+    .map_err(|e| format!("Failed to decode Syncthing folders config: {}", e))?;
+    let pending_folders = syncthing_request_json(
+        &app,
+        reqwest::Method::GET,
+        "/rest/cluster/pending/folders",
+        None,
+    )
+    .await?;
+
+    let folder_details = pending_folders
+        .get(&normalized_folder_id)
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "Incoming shared folder offer not found".to_string())?;
+    let offered_by = folder_details
+        .get("offeredBy")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "Incoming shared folder offer is missing offering devices".to_string())?;
+    if offered_by.is_empty() {
+        return Err("Incoming shared folder offer has no offering devices".to_string());
+    }
+
+    let mut registry = load_share_registry(&app);
+    let existing_devices_by_id: HashMap<String, serde_json::Value> = configured_devices
+        .iter()
+        .filter_map(|device| json_string_field(device, "deviceID").map(|id| (id, device.clone())))
+        .collect();
+    let existing_folder_by_id: HashMap<String, serde_json::Value> = configured_folders
+        .iter()
+        .filter_map(|folder| json_string_field(folder, "id").map(|id| (id, folder.clone())))
+        .collect();
+
+    let mut label = normalized_folder_id.clone();
+    let mut receive_encrypted = false;
+    let mut remote_encrypted = false;
+    let mut primary_contact_name = "Shared With Me".to_string();
+    let mut remote_device_ids = Vec::new();
+    let mut member_contact_ids = Vec::new();
+    let now = current_millis_u64();
+
+    for (device_id, offer) in offered_by {
+        if let Some(next_label) = json_string_field(offer, "label") {
+            label = next_label;
+        }
+        receive_encrypted |= json_bool_field(offer, "receiveEncrypted").unwrap_or(false);
+        remote_encrypted |= json_bool_field(offer, "remoteEncrypted").unwrap_or(false);
+        let preferred_name = contact_by_syncthing_device_id(&registry, device_id)
+            .map(|contact| contact.display_name.clone())
+            .unwrap_or_else(|| format!("Remote {}", short_device_label(device_id)));
+        let contact_id = ensure_placeholder_contact_for_device(
+            &mut registry,
+            device_id,
+            Some(preferred_name.as_str()),
+            now,
+        );
+        if !member_contact_ids
+            .iter()
+            .any(|existing| existing == &contact_id)
+        {
+            member_contact_ids.push(contact_id.clone());
+        }
+        if primary_contact_name == "Shared With Me" {
+            if let Some(contact) = registry
+                .contacts
+                .iter()
+                .find(|contact| contact.id == contact_id)
+            {
+                primary_contact_name = contact.display_name.clone();
+            }
+        }
+        let remote_device_id = canonicalize_syncthing_device_id(&app, device_id).await?;
+        let device_name = registry
+            .contacts
+            .iter()
+            .find(|contact| contact.id == contact_id)
+            .map(|contact| contact.display_name.clone())
+            .unwrap_or_else(|| format!("Remote {}", short_device_label(&remote_device_id)));
+        let device_config = build_syncthing_device_config(
+            &device_template,
+            existing_devices_by_id.get(&remote_device_id),
+            &remote_device_id,
+            &device_name,
+        )?;
+        syncthing_request_json(
+            &app,
+            reqwest::Method::POST,
+            "/rest/config/devices",
+            Some(device_config),
+        )
+        .await?;
+        remote_device_ids.push(remote_device_id);
+    }
+
+    if receive_encrypted || remote_encrypted {
+        return Err(
+            "Receive-encrypted incoming folders are not supported in Entropic yet.".to_string(),
+        );
+    }
+
+    remote_device_ids.sort();
+    remote_device_ids.dedup();
+
+    let target_path = build_incoming_offer_target_path(&registry, &primary_contact_name, &label);
+    let full_path = workspace_file(&target_path);
+    docker_exec_output(&["exec", SYNCTHING_CONTAINER, "mkdir", "-p", "--", &full_path])?;
+    let folder_config = build_syncthing_incoming_folder_config(
+        &folder_template,
+        existing_folder_by_id.get(&normalized_folder_id),
+        &normalized_folder_id,
+        &label,
+        &target_path,
+        &local_device_id,
+        &remote_device_ids,
+    )?;
+    syncthing_request_json(
+        &app,
+        reqwest::Method::POST,
+        "/rest/config/folders",
+        Some(folder_config),
+    )
+    .await?;
+
+    let accepted_folder = SharedWorkspaceFolder {
+        id: unique_id(),
+        path: target_path.clone(),
+        title: label.clone(),
+        members: member_contact_ids
+            .into_iter()
+            .map(|contact_id| SharedFolderMember {
+                contact_id,
+                added_at: now,
+            })
+            .collect(),
+        direction: "incoming".to_string(),
+        syncthing_folder_id: Some(normalized_folder_id.clone()),
+        sync_status: "pending_setup".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    registry.folders.retain(|folder| {
+        folder.path != target_path
+            && shared_workspace_folder_syncthing_id(folder) != normalized_folder_id
+    });
+    registry.folders.push(accepted_folder);
+    save_share_registry(&app, &registry)?;
+
+    let snapshot = build_syncthing_share_status_snapshot(&app).await?;
+    persist_syncthing_folder_statuses(&app, &snapshot)?;
+    Ok(AcceptedSyncthingIncomingFolder {
+        folder_id: normalized_folder_id,
+        label,
+        path: target_path,
+        snapshot,
+    })
+}
+
+#[tauri::command]
+pub async fn reject_syncthing_incoming_folder_offer(
+    app: AppHandle,
+    folder_id: String,
+) -> Result<SyncthingShareStatusSnapshot, String> {
+    let normalized_folder_id = normalize_share_id(&folder_id, "Folder id")?;
+    let _guard = syncthing_sync_lock().lock().await;
+    start_syncthing_sidecar(&app).await?;
+    let mut url = syncthing_api_url("/rest/cluster/pending/folders")?;
+    url.query_pairs_mut()
+        .append_pair("folder", normalized_folder_id.as_str());
+    syncthing_request_json_url(&app, reqwest::Method::DELETE, url, None).await?;
+    let snapshot = build_syncthing_share_status_snapshot(&app).await?;
+    persist_syncthing_folder_statuses(&app, &snapshot)?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn get_syncthing_share_status(
+    app: AppHandle,
+) -> Result<SyncthingShareStatusSnapshot, String> {
+    let snapshot = build_syncthing_share_status_snapshot(&app).await?;
+    let _ = persist_syncthing_folder_statuses(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn sync_syncthing_shares(app: AppHandle) -> Result<SyncthingShareStatusSnapshot, String> {
+    let _guard = syncthing_sync_lock().lock().await;
+    start_syncthing_sidecar(&app).await?;
+    sync_syncthing_share_registry(&app).await?;
+    let snapshot = build_syncthing_share_status_snapshot(&app).await?;
+    persist_syncthing_folder_statuses(&app, &snapshot)?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn rescan_shared_workspace_folder(
+    app: AppHandle,
+    share_id: String,
+) -> Result<SyncthingShareStatusSnapshot, String> {
+    let normalized_share_id = normalize_share_id(&share_id, "Share id")?;
+    let _guard = syncthing_sync_lock().lock().await;
+    start_syncthing_sidecar(&app).await?;
+    sync_syncthing_share_registry(&app).await?;
+    let registry = load_share_registry(&app);
+    let folder = registry
+        .folders
+        .iter()
+        .find(|folder| folder.id == normalized_share_id)
+        .ok_or_else(|| "Shared folder not found".to_string())?;
+    let mut url = syncthing_api_url("/rest/db/scan")?;
+    url.query_pairs_mut().append_pair(
+        "folder",
+        shared_workspace_folder_syncthing_id(folder).as_str(),
+    );
+    syncthing_request_json_url(&app, reqwest::Method::POST, url, None).await?;
+    let snapshot = build_syncthing_share_status_snapshot(&app).await?;
+    persist_syncthing_folder_statuses(&app, &snapshot)?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn list_shared_workspace_folder_conflicts(
+    app: AppHandle,
+    share_id: String,
+) -> Result<Vec<SyncthingFolderConflict>, String> {
+    let normalized_share_id = normalize_share_id(&share_id, "Share id")?;
+    let registry = load_share_registry(&app);
+    let folder = registry
+        .folders
+        .iter()
+        .find(|folder| folder.id == normalized_share_id)
+        .ok_or_else(|| "Shared folder not found".to_string())?;
+    let container = workspace_sync_scan_container().ok_or_else(|| {
+        "Start the runtime or Syncthing to inspect shared-folder conflicts.".to_string()
+    })?;
+    let full_path = workspace_file(&folder.path);
+    let output = docker_exec_output(&[
+        "exec",
+        container,
+        "find",
+        &full_path,
+        "-type",
+        "f",
+        "-name",
+        "*sync-conflict*",
+    ])
+    .unwrap_or_default();
+    let mut conflicts: Vec<SyncthingFolderConflict> = output
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let relative = trimmed
+                .strip_prefix(WORKSPACE_ROOT)?
+                .trim_start_matches('/');
+            if relative.is_empty() {
+                None
+            } else {
+                Some(SyncthingFolderConflict {
+                    path: relative.to_string(),
+                })
+            }
+        })
+        .collect();
+    conflicts.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(conflicts)
 }
 
 #[tauri::command]

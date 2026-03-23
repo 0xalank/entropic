@@ -1,0 +1,142 @@
+name: spreadsheet
+purpose: Hierarchical definition for tabular computational documents.
+
+extends:
+  - tabular-space
+
+keywords:
+  - workbook
+  - worksheet
+  - cell
+  - range
+  - row
+  - column
+  - formula
+  - table
+  - chart
+
+structure:
+  root_object:
+    kind: workbook
+    parts:
+      - worksheet
+  worksheet:
+    parts:
+      - cell
+      - range
+      - table
+      - chart
+  sparse_rule: >
+    Empty cells need not be materialized. A sparse cell map is canonical for
+    agent-facing manipulation.
+
+relations:
+  - verb: contains
+    source: workbook
+    target: worksheet
+  - verb: contains
+    source: worksheet
+    target: cell
+  - verb: covers
+    source: range
+    target: cell
+  - verb: depends_on
+    source: formula
+    target: cell
+  - verb: visualizes
+    source: chart
+    target: range
+
+views:
+  - identity: grid-view
+    focus: worksheet
+    rendering_intent: human tabular editing
+  - identity: formula-view
+    focus: formula relations
+    rendering_intent: dependency inspection
+  - identity: summary-view
+    focus: named ranges, tables, charts
+    rendering_intent: agent planning
+
+actions:
+  - identity: set-cell
+    verb: set
+    operands: [worksheet, cell_ref, value_or_formula]
+  - identity: clear-cell
+    verb: clear
+    operands: [worksheet, cell_ref]
+  - identity: inspect-range
+    verb: inspect
+    operands: [worksheet, range]
+  - identity: rename-sheet
+    verb: rename
+    operands: [worksheet, label]
+  - identity: define-range
+    verb: define
+    operands: [worksheet, range]
+  - identity: create-chart
+    verb: create
+    operands: [worksheet, chart, source_range]
+
+invariants:
+  - identity: cell-addresses-are-unique-within-worksheet
+    statement: A worksheet cannot contain two distinct cells with the same ref.
+  - identity: formulas-reference-valid-cells-or-ranges
+    statement: Formula references should resolve within workbook semantics.
+
+capabilities:
+  ideal:
+    read:
+      - workbook
+      - worksheet
+      - cell
+      - formula
+      - chart
+    write:
+      - cell
+      - formula
+      - worksheet
+      - chart
+  current_entropic_office:
+    read:
+      - worksheet
+      - sparse cell map
+      - formula
+    write:
+      - cell
+      - formula
+      - worksheet rename
+    missing:
+      - chart semantics
+      - pivot semantics
+      - filter semantics
+      - robust add/remove worksheet semantics on existing files
+
+loss_boundary:
+  preserved_but_not_fully_described:
+    - chart layout
+    - conditional formatting
+    - comments
+    - named styles
+    - pivot tables
+    - data validation
+
+instance_shape:
+  canonical:
+    kind: spreadsheet
+    object:
+      workbook:
+        worksheets:
+          - name: Sheet1
+            cells:
+              - ref: A1
+                row: 1
+                col: 1
+                kind: string
+                value: Task
+              - ref: B2
+                row: 2
+                col: 2
+                kind: formula
+                formula: SUM(B3:B9)
+                display: "42"

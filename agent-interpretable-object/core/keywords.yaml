@@ -1,0 +1,73 @@
+name: core-keywords
+purpose: Shared vocabulary for all agent-interpretable objects.
+
+keywords:
+  kind:
+    meaning: The concrete object family being described.
+    examples: [spreadsheet, document, presentation, svg_scene, figma_canvas, blender_scene]
+
+  family:
+    meaning: A reusable semantic pattern that multiple kinds can extend.
+    examples: [tabular-space, linear-text, slide-space, graphics-scene]
+
+  object:
+    meaning: A semantic unit that can exist as a whole.
+
+  part:
+    meaning: A contained semantic unit inside an object.
+
+  structure:
+    meaning: The containment hierarchy of the object.
+
+  relation:
+    meaning: A meaningful edge between two semantic units.
+
+  view:
+    meaning: A projection of the object into a usable perspective.
+
+  action:
+    meaning: A meaningful transformation over the object.
+
+  invariant:
+    meaning: A condition that should remain valid after edits.
+
+  capability:
+    meaning: A supported read/write behavior of a realization.
+
+  loss_boundary:
+    meaning: >
+      Structure that may be preserved during round-trips without being fully
+      expressible by the active realization.
+
+  realization:
+    meaning: >
+      A concrete runtime or adapter that reads/writes the object, such as
+      entropic-office or ONLYOFFICE.
+
+  identity:
+    meaning: Stable name or identifier for an object or part.
+
+  label:
+    meaning: Human-facing display name.
+
+  ref:
+    meaning: Local positional reference within an object.
+    examples: [A1, Slide 2, Paragraph 5]
+
+  slot:
+    meaning: A named role in a structure.
+    examples: [title, body, notes, header, footer]
+
+  selection:
+    meaning: A focused subset of the object.
+
+  projection:
+    meaning: Another name for a view that omits some structure.
+
+  keyword_set:
+    meaning: Important domain words an agent should know before editing.
+
+agent_guidance:
+  - Prefer the words defined here over inventing synonyms in payloads.
+  - Extend by refinement, not by ad hoc top-level fields.
+  - If a new kind needs a new keyword, add it here first or in a family definition.

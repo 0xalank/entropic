@@ -1,0 +1,118 @@
+name: canonical-instance
+purpose: >
+  Compact instance representation for concrete agent-interpretable objects.
+  This is meant for direct runtime use and direct agent inspection.
+
+goals:
+  - token efficiency
+  - grep friendliness
+  - stable top-level shape
+  - hierarchical structure
+  - minimal duplication of semantics already present in definitions
+
+top_level_shape:
+  required:
+    - spec
+    - kind
+    - format
+    - definitions
+    - realization
+    - source
+    - object
+
+fields:
+  spec:
+    meaning: Constant marker for the instance family.
+    value: agent-interpretable-object
+
+  kind:
+    meaning: Concrete kind such as spreadsheet, document, or presentation.
+
+  format:
+    meaning: Native file format such as xlsx, csv, docx, or pptx.
+
+  definitions:
+    meaning: References to the meaning-bearing definition files.
+    shape:
+      manifest: path
+      core: [path]
+      families: [path]
+      kind: path
+
+  realization:
+    meaning: Concrete runtime adapter currently handling this object.
+    shape:
+      name: string
+      mode: string
+      capability_set: string
+
+  source:
+    meaning: Concrete file origin and state.
+    shape:
+      path: string
+      exists: boolean
+      etag: string
+      modifiedMs: integer_or_null
+      size: integer
+      notes: [string]
+
+  object:
+    meaning: The concrete semantic object instance.
+    rule: >
+      This should be hierarchical and sparse. It should contain the actual
+      object state, not repeated ontology prose.
+
+grep_rules:
+  - Prefer stable singular field names.
+  - Prefer arrays of explicitly typed parts over deeply implicit nesting.
+  - Prefer `id`, `kind`, `name`, `ref`, `text`, `value`, `formula`.
+  - Avoid repeating full capability and loss-boundary prose in each instance.
+  - Refer to definition files instead.
+
+instance_examples:
+  spreadsheet:
+    spec: agent-interpretable-object
+    kind: spreadsheet
+    format: xlsx
+    definitions:
+      manifest: agent-interpretable-object/manifest.yaml
+      core:
+        - agent-interpretable-object/core/keywords.yaml
+        - agent-interpretable-object/core/ontology.yaml
+        - agent-interpretable-object/core/canonical-instance.yaml
+      families:
+        - agent-interpretable-object/families/tabular-space.yaml
+      kind: agent-interpretable-object/kinds/spreadsheet.yaml
+    realization:
+      name: entropic-office
+      mode: automation
+      capability_set: current_entropic_office
+    source:
+      path: /data/workspace/todo.xlsx
+      exists: true
+      etag: "1742790000000:5022"
+      modifiedMs: 1742790000000
+      size: 5022
+      notes: []
+    object:
+      id: workbook:todo
+      kind: workbook
+      worksheets:
+        - id: worksheet:sheet1
+          kind: worksheet
+          name: Sheet1
+          extent:
+            rows: 3
+            cols: 2
+          cells:
+            - id: cell:sheet1:A1
+              kind: cell
+              ref: A1
+              row: 1
+              col: 1
+              value: Task
+
+adapter_rule:
+  - Realizations may expose richer legacy payloads.
+  - The canonical instance form is the compact interchange form for agent use.
+  - Legacy payloads should be convertible to and from this shape.

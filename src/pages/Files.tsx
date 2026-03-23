@@ -49,10 +49,36 @@ import {
   Pin,
   PanelLeftClose,
   PanelLeftOpen,
+  Users,
 } from "lucide-react";
 import { loadOnboardingData } from "../lib/profile";
 import { WALLPAPERS, DEFAULT_WALLPAPER_ID, getWallpaperById } from "../lib/wallpapers";
 import { loadDesktopSettings, updateDesktopSettings } from "../lib/settingsStore";
+import {
+  acceptSyncthingIncomingFolderOffer,
+  deleteShareContact,
+  deleteSharedWorkspaceFolder,
+  generateShareContactInvite,
+  getSharedWorkspaceFolder,
+  getSyncthingShareStatus,
+  importShareContactInvite,
+  listShareContacts,
+  listSharedWorkspaceFolders,
+  listSharedWorkspaceFolderConflicts,
+  rejectSyncthingIncomingFolderOffer,
+  rescanSharedWorkspaceFolder,
+  saveShareContact,
+  saveSharedWorkspaceFolder,
+  syncSyncthingShares,
+  type AcceptedSyncthingIncomingFolder,
+  type ShareContact,
+  type ShareContactInvite,
+  type SharedWorkspaceFolder,
+  type SyncthingFolderConflict,
+  type SyncthingIncomingFolderOffer,
+  type SyncthingShareStatusSnapshot,
+  type SyncthingSharedFolderStatus,
+} from "../lib/shares";
 const PluginStore = lazy(() => import("./Store").then((m) => ({ default: m.Store })));
 const SkillsStore = lazy(() => import("./Store").then((m) => ({ default: m.Store })));
 const Channels = lazy(() => import("./Channels").then((m) => ({ default: m.Channels })));
@@ -77,6 +103,7 @@ import {
   syncEmbeddedPreviewWebview,
 } from "../lib/nativePreview";
 import { hostedFeaturesEnabled } from "../lib/buildProfile";
+import { ensureOnlyOfficeReady } from "../lib/office";
 
 type WorkspaceFileEntry = {
   name: string;
@@ -84,6 +111,11 @@ type WorkspaceFileEntry = {
   is_directory: boolean;
   size: number;
   modified_at: number;
+};
+
+type WorkspaceImageThumbnail = {
+  dataUrl: string;
+  modifiedAt: number;
 };
 
 type Props = {
@@ -147,6 +179,21 @@ type EmbeddedPreviewState = {
   title: string | null;
 };
 
+type OfficeAppKind = "sheets" | "docs" | "slides";
+
+type OfficeAppSession = {
+  path: string;
+  name: string;
+  url: string;
+  launchToken: number;
+};
+
+type OfficeRecentEntry = {
+  path: string;
+  name: string;
+  openedAt: number;
+};
+
 type BrowserTabState = {
   id: string;
   title: string | null;
@@ -191,15 +238,18 @@ const DEFAULT_WINDOW_Z: Record<string, number> = {
   finder: 60,
   chat: 61,
   browser: 62,
-  terminal: 63,
-  plugins: 64,
-  skills: 65,
-  channels: 66,
-  tasks: 67,
-  jobs: 68,
-  logs: 69,
-  billing: 70,
-  settings: 71,
+  sheets: 63,
+  docs: 64,
+  slides: 65,
+  terminal: 66,
+  plugins: 67,
+  skills: 68,
+  channels: 69,
+  tasks: 70,
+  jobs: 71,
+  logs: 72,
+  billing: 73,
+  settings: 74,
   preview: 80,
 };
 
@@ -207,7 +257,12 @@ const HIDDEN_FILES = new Set(["HEARTBEAT.md", "IDENTITY.md", "SOUL.md", "TOOLS.m
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
 const BINARY_EXTS = new Set(["pdf", "zip", "xlsx", "xls", "docx", "pptx"]);
 const HTML_EXTS = new Set(["html", "htm"]);
+const ONLYOFFICE_BROWSER_EXTS = new Set(["docx", "xlsx", "pptx"]);
+const SPREADSHEET_BROWSER_EXTS = new Set(["xlsx", "xls", "csv"]);
+const DOCUMENT_BROWSER_EXTS = new Set(["docx"]);
+const PRESENTATION_BROWSER_EXTS = new Set(["pptx"]);
 const DESKTOP_HANDOFF_STORAGE_KEY = "entropic.desktop.handoff";
+const DESKTOP_HANDOFF_EVENT = "entropic-desktop-handoff";
 const DESKTOP_SESSION_STORAGE_KEY = "entropic.desktop.session.v1";
 const DEFAULT_DESKTOP_CHAT_TITLE = "New chat";
 const CHAT_WORKSPACE_PREFIXES = [
@@ -219,7 +274,11 @@ const CHAT_WORKSPACE_PATH_RE = /((?:\/data\/(?:\.openclaw\/)?workspace|\/home\/n
 const DEFAULT_BROWSER_URL = "https://www.google.com";
 const DEFAULT_BROWSER_LIVE_WS_BASE = "ws://127.0.0.1:19792/live";
 const CONTAINER_LOCAL_BROWSER_BASE = "http://container.localhost:19791";
+const ONLYOFFICE_DESKTOP_BASE = "http://127.0.0.1:19796";
+const MAX_OFFICE_RECENTS = 8;
 const WORKSPACE_FOLDER_REFRESH_MS = 1500;
+const MAX_FINDER_THUMBNAILS = 120;
+const MAX_FINDER_THUMBNAIL_BYTES = 16 * 1024 * 1024;
 const BROWSER_DETAILS_PANEL_HEIGHT = 0;
 const BROWSER_APP_WINDOW_TITLEBAR_HEIGHT = 34;
 const BROWSER_TOOLBAR_HEIGHT = 49;
@@ -265,6 +324,9 @@ type DesktopSessionState = {
   chatOpen: boolean;
   chatNavCollapsed: boolean;
   browserOpen: boolean;
+  sheetsOpen: boolean;
+  docsOpen: boolean;
+  slidesOpen: boolean;
   terminalOpen: boolean;
   pluginsOpen: boolean;
   skillsOpen: boolean;
@@ -280,6 +342,12 @@ type DesktopSessionState = {
   chatSize: WindowSize;
   browserPos: WindowPoint;
   browserSize: WindowSize;
+  sheetsPos: WindowPoint;
+  sheetsSize: WindowSize;
+  docsPos: WindowPoint;
+  docsSize: WindowSize;
+  slidesPos: WindowPoint;
+  slidesSize: WindowSize;
   terminalPos: WindowPoint;
   terminalSize: WindowSize;
   pluginsPos: WindowPoint;
@@ -303,6 +371,9 @@ type DesktopSessionState = {
   browserEmbeddedPreviewTitle: string | null;
   browserTabs: PersistedBrowserTab[];
   activeBrowserTabId: string | null;
+  sheetsRecent: OfficeRecentEntry[];
+  docsRecent: OfficeRecentEntry[];
+  slidesRecent: OfficeRecentEntry[];
   terminalSessionId: string | null;
   terminalInput: string;
   desktopIcons: Record<string, DesktopIcon>;
@@ -468,6 +539,25 @@ function asDesktopIcons(value: unknown): Record<string, DesktopIcon> | null {
   return Object.keys(next).length > 0 ? next : null;
 }
 
+function asOfficeRecentEntries(value: unknown): OfficeRecentEntry[] | null {
+  if (!Array.isArray(value)) return null;
+  const next = value
+    .map((entry) => {
+      if (!isRecord(entry)) return null;
+      const path = typeof entry.path === "string" ? entry.path.trim() : "";
+      const name = typeof entry.name === "string" ? entry.name.trim() : workspacePathName(path);
+      const openedAt = Number(entry.openedAt);
+      if (!path) return null;
+      return {
+        path,
+        name: name || workspacePathName(path),
+        openedAt: Number.isFinite(openedAt) ? openedAt : 0,
+      };
+    })
+    .filter((entry): entry is OfficeRecentEntry => entry !== null);
+  return next;
+}
+
 function formatSize(bytes: number): string {
   if (bytes === 0) return "Zero bytes";
   if (bytes < 1024) return `${bytes} bytes`;
@@ -491,6 +581,119 @@ function formatDate(epochSec: number): string {
     year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
     hour: "numeric", minute: "2-digit",
   });
+}
+
+function formatShareCountLabel(count: number): string {
+  return `${count} contact${count === 1 ? "" : "s"}`;
+}
+
+function formatShareSyncStatus(status?: string | null): string {
+  switch (status) {
+    case "pending_device_ids":
+      return "Waiting for device IDs";
+    case "pending_setup":
+      return "Pending Syncthing setup";
+    case "pending_accept":
+      return "Waiting for remote accept";
+    case "ready":
+      return "Synced";
+    case "syncing":
+      return "Syncing";
+    case "paused":
+      return "Paused";
+    case "offline":
+      return "Offline";
+    case "transport_stopped":
+      return "Syncthing stopped";
+    case "error":
+      return "Sync error";
+    default:
+      return "Registry only";
+  }
+}
+
+function formatSyncthingContactStatus(status?: string | null): string {
+  switch (status) {
+    case "pending_device_id":
+      return "Needs device ID";
+    case "invalid_device_id":
+      return "Invalid device ID";
+    case "self_device":
+      return "Points to this device";
+    case "pending_setup":
+      return "Pending setup";
+    case "connected":
+      return "Connected";
+    case "offline":
+      return "Offline";
+    case "transport_stopped":
+      return "Syncthing stopped";
+    default:
+      return "Saved";
+  }
+}
+
+function formatSyncthingSummary(snapshot: SyncthingShareStatusSnapshot | null): string {
+  if (!snapshot) return "Loading Syncthing status…";
+  if (snapshot.error) return snapshot.error;
+  if (!snapshot.running) return "Syncthing is not running yet.";
+  if (!snapshot.ready) return "Syncthing is starting…";
+  const incoming = snapshot.incomingOffers?.length ?? 0;
+  const suffix = incoming > 0 ? ` · ${incoming} incoming ${incoming === 1 ? "offer" : "offers"}` : "";
+  return `Syncthing ready${snapshot.version ? ` · ${snapshot.version}` : ""}${suffix}`;
+}
+
+function formatShortDeviceId(deviceId?: string | null): string {
+  if (!deviceId) return "Device ID pending";
+  if (deviceId.length <= 24) return deviceId;
+  return `${deviceId.slice(0, 14)}…${deviceId.slice(-8)}`;
+}
+
+function formatIncomingOfferStatus(status?: string | null): string {
+  switch (status) {
+    case "pending_accept":
+      return "Ready to accept";
+    case "needs_contact":
+      return "Acceptable, contact unknown";
+    case "encrypted_offer":
+      return "Encrypted offer unsupported";
+    default:
+      return "Incoming offer";
+  }
+}
+
+function isIncomingSharedFolder(folder?: SharedWorkspaceFolder | null): boolean {
+  return folder?.direction?.trim().toLowerCase() === "incoming";
+}
+
+function formatSharedFolderBadge(folder: SharedWorkspaceFolder, status?: string | null): string {
+  const prefix = isIncomingSharedFolder(folder) ? "Incoming" : "Shared";
+  return `${prefix} · ${formatShareSyncStatus(status ?? folder.syncStatus)}`;
+}
+
+function formatSharedFolderInlineSummary(
+  folder: SharedWorkspaceFolder,
+  status?: string | null,
+): string {
+  const prefix = isIncomingSharedFolder(folder) ? "Incoming from" : "Shared with";
+  const statusLabel = formatShareSyncStatus(status ?? folder.syncStatus);
+  return `${prefix} ${formatShareCountLabel(folder.members.length)} · ${statusLabel}`;
+}
+
+function workspaceImageMime(name: string): string {
+  const ext = workspacePathName(name).split(".").pop()?.toLowerCase() || "";
+  if (ext === "svg") return "image/svg+xml";
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  return `image/${ext || "png"}`;
+}
+
+function workspaceImageDataUrl(name: string, base64: string): string {
+  return `data:${workspaceImageMime(name)};base64,${base64}`;
+}
+
+function isImageWorkspaceEntry(entry: WorkspaceFileEntry): boolean {
+  const ext = workspacePathName(entry.path).split(".").pop()?.toLowerCase() || "";
+  return !entry.is_directory && IMAGE_EXTS.has(ext);
 }
 
 function getFileIcon(name: string, isDir: boolean) {
@@ -565,6 +768,16 @@ function requestedBrowserViewportSize(width: number, height: number) {
 }
 
 function workspaceBrowserUrl(path: string): string {
+  const ext = workspacePathName(path).split(".").pop()?.toLowerCase() || "";
+  if (ONLYOFFICE_BROWSER_EXTS.has(ext)) {
+    return `${ONLYOFFICE_DESKTOP_BASE}/__onlyoffice__/open?path=${encodeURIComponent(path)}`;
+  }
+  if (SPREADSHEET_BROWSER_EXTS.has(ext)) {
+    return `${CONTAINER_LOCAL_BROWSER_BASE}/__workspace_editor__/spreadsheet?path=${encodeURIComponent(path)}`;
+  }
+  if (DOCUMENT_BROWSER_EXTS.has(ext)) {
+    return `${CONTAINER_LOCAL_BROWSER_BASE}/__workspace_editor__/doc?path=${encodeURIComponent(path)}`;
+  }
   const normalized = path
     .split("/")
     .filter(Boolean)
@@ -573,6 +786,64 @@ function workspaceBrowserUrl(path: string): string {
   return normalized
     ? `${CONTAINER_LOCAL_BROWSER_BASE}/__workspace__/${normalized}`
     : `${CONTAINER_LOCAL_BROWSER_BASE}/__workspace__/`;
+}
+
+function workspaceFileCanOpenInBrowser(path: string): boolean {
+  const ext = workspacePathName(path).split(".").pop()?.toLowerCase() || "";
+  return (
+    HTML_EXTS.has(ext) ||
+    ONLYOFFICE_BROWSER_EXTS.has(ext) ||
+    SPREADSHEET_BROWSER_EXTS.has(ext) ||
+    DOCUMENT_BROWSER_EXTS.has(ext) ||
+    PRESENTATION_BROWSER_EXTS.has(ext)
+  );
+}
+
+function workspaceFileUsesOnlyOffice(path: string): boolean {
+  const ext = workspacePathName(path).split(".").pop()?.toLowerCase() || "";
+  return ONLYOFFICE_BROWSER_EXTS.has(ext);
+}
+
+function officeAppKindForPath(path: string): OfficeAppKind | null {
+  const ext = workspacePathName(path).split(".").pop()?.toLowerCase() || "";
+  if (ext === "xlsx") return "sheets";
+  if (ext === "docx") return "docs";
+  if (ext === "pptx") return "slides";
+  return null;
+}
+
+function officeAppLabel(kind: OfficeAppKind): string {
+  switch (kind) {
+    case "sheets":
+      return "Sheets";
+    case "docs":
+      return "Docs";
+    case "slides":
+      return "Slides";
+  }
+}
+
+function officeAppLaunchUrl(session: OfficeAppSession): string {
+  const separator = session.url.includes("?") ? "&" : "?";
+  return `${session.url}${separator}entropic_open=${session.launchToken}`;
+}
+
+function pushOfficeRecentEntry(
+  current: OfficeRecentEntry[],
+  nextEntry: OfficeRecentEntry,
+): OfficeRecentEntry[] {
+  return [
+    nextEntry,
+    ...current.filter((entry) => entry.path !== nextEntry.path),
+  ].slice(0, MAX_OFFICE_RECENTS);
+}
+
+function workspaceOpenLabel(path: string): string {
+  const officeKind = officeAppKindForPath(path);
+  if (officeKind) {
+    return `Open in ${officeAppLabel(officeKind)}`;
+  }
+  return "Open in Browser";
 }
 
 function trimChatWorkspaceToken(raw: string): string {
@@ -594,6 +865,25 @@ function normalizeChatWorkspacePath(raw: string): string | null {
   return null;
 }
 
+function normalizeDesktopWorkspacePath(raw: string): string | null {
+  const normalized = normalizeChatWorkspacePath(raw);
+  if (normalized !== null) {
+    return normalized;
+  }
+  const trimmed = trimChatWorkspaceToken(raw.trim());
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.startsWith("/") || trimmed.startsWith("./") || trimmed.startsWith("../")) {
+    return null;
+  }
+  const parts = trimmed.split("/").filter(Boolean);
+  if (parts.length === 0 || parts.some((part) => part === "." || part === "..")) {
+    return null;
+  }
+  return parts.join("/");
+}
+
 function workspacePathName(path: string): string {
   const parts = path.split("/").filter(Boolean);
   return parts[parts.length - 1] || "Workspace";
@@ -603,6 +893,16 @@ function workspacePathParent(path: string): string {
   const parts = path.split("/").filter(Boolean);
   parts.pop();
   return parts.join("/");
+}
+
+function sharedFolderWorkspaceEntry(folder: SharedWorkspaceFolder): WorkspaceFileEntry {
+  return {
+    name: workspacePathName(folder.path),
+    path: folder.path,
+    is_directory: true,
+    size: 0,
+    modified_at: 0,
+  };
 }
 
 function windowRectsIntersect(a: WindowRect, b: WindowRect): boolean {
@@ -789,6 +1089,82 @@ function DockIconButton({
   );
 }
 
+function OfficeHomePanel({
+  kind,
+  recent,
+  onOpenRecent,
+  onOpenChat,
+}: {
+  kind: OfficeAppKind;
+  recent: OfficeRecentEntry[];
+  onOpenRecent: (path: string) => void;
+  onOpenChat: () => void;
+}) {
+  const title = officeAppLabel(kind);
+  const subtitle =
+    kind === "sheets"
+      ? "Create spreadsheets with chat or reopen recent work."
+      : kind === "docs"
+        ? "Create documents with chat or reopen recent work."
+        : "Create presentations with chat or reopen recent work.";
+
+  return (
+    <div className="h-full overflow-auto bg-[linear-gradient(180deg,#f8fafc_0%,#eef5ff_100%)] px-8 py-8">
+      <div className="mx-auto flex h-full max-w-3xl flex-col">
+        <div className="mb-8">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+            {title}
+          </div>
+          <h2 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">{title}</h2>
+          <p className="mt-2 max-w-xl text-sm text-slate-600">{subtitle}</p>
+        </div>
+
+        {recent.length > 0 ? (
+          <div className="rounded-[24px] border border-slate-200 bg-white/85 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+            <div className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+              Recent
+            </div>
+            <div className="space-y-2">
+              {recent.map((entry) => (
+                <button
+                  key={entry.path}
+                  type="button"
+                  onClick={() => onOpenRecent(entry.path)}
+                  className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left transition hover:border-slate-300 hover:bg-slate-50"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-slate-900">{entry.name}</div>
+                    <div className="truncate text-xs text-slate-500">{entry.path}</div>
+                  </div>
+                  <div className="ml-4 shrink-0 text-[11px] text-slate-400">
+                    {formatDate(Math.floor(entry.openedAt / 1000))}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-1 items-center justify-center">
+            <div className="max-w-md rounded-[28px] border border-slate-200 bg-white/92 px-8 py-9 text-center shadow-[0_24px_80px_rgba(15,23,42,0.1)] backdrop-blur">
+              <div className="text-lg font-semibold text-slate-900">No recent {title.toLowerCase()} yet</div>
+              <p className="mt-2 text-sm text-slate-600">
+                Open chat and ask Entropic to create one for you, then it will appear here.
+              </p>
+              <button
+                type="button"
+                onClick={onOpenChat}
+                className="mt-5 inline-flex h-11 items-center justify-center rounded-2xl bg-slate-900 px-5 text-sm font-semibold text-white transition hover:bg-slate-800"
+              >
+                Create With Chat
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ═════════════════════════════════════════════════════════════════════
 export function Files({
   gatewayRunning,
@@ -824,6 +1200,9 @@ export function Files({
   const [finderOpen, setFinderOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
+  const [sheetsOpen, setSheetsOpen] = useState(false);
+  const [docsOpen, setDocsOpen] = useState(false);
+  const [slidesOpen, setSlidesOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [pluginsOpen, setPluginsOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
@@ -851,6 +1230,18 @@ export function Files({
   const [browserSize, setBrowserSize] = useState({ w: 1180, h: 760 });
   const browserDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   const browserResizeRef = useRef<WindowResizeState | null>(null);
+  const [sheetsPos, setSheetsPos] = useState({ x: 156, y: 58 });
+  const [sheetsSize, setSheetsSize] = useState({ w: 1100, h: 720 });
+  const sheetsDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  const sheetsResizeRef = useRef<WindowResizeState | null>(null);
+  const [docsPos, setDocsPos] = useState({ x: 186, y: 78 });
+  const [docsSize, setDocsSize] = useState({ w: 1040, h: 700 });
+  const docsDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  const docsResizeRef = useRef<WindowResizeState | null>(null);
+  const [slidesPos, setSlidesPos] = useState({ x: 216, y: 98 });
+  const [slidesSize, setSlidesSize] = useState({ w: 1120, h: 720 });
+  const slidesDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  const slidesResizeRef = useRef<WindowResizeState | null>(null);
   const [terminalPos, setTerminalPos] = useState({ x: 156, y: 70 });
   const [terminalSize, setTerminalSize] = useState({ w: 920, h: 560 });
   const terminalDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
@@ -892,6 +1283,7 @@ export function Files({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewState | null>(null);
+  const [finderThumbnails, setFinderThumbnails] = useState<Record<string, WorkspaceImageThumbnail>>({});
   const [uploading, setUploading] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [selected, setSelected] = useState<string | null>(null);
@@ -901,11 +1293,35 @@ export function Files({
   const [createFolderName, setCreateFolderName] = useState("");
   const [createFolderBasePath, setCreateFolderBasePath] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [shareTargetEntry, setShareTargetEntry] = useState<WorkspaceFileEntry | null>(null);
+  const [shareContacts, setShareContacts] = useState<ShareContact[]>([]);
+  const [sharedFolders, setSharedFolders] = useState<SharedWorkspaceFolder[]>([]);
+  const [shareTargetRecord, setShareTargetRecord] = useState<SharedWorkspaceFolder | null>(null);
+  const [shareSelectedContactIds, setShareSelectedContactIds] = useState<string[]>([]);
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareSaving, setShareSaving] = useState(false);
+  const [shareContactName, setShareContactName] = useState("");
+  const [shareContactDeviceId, setShareContactDeviceId] = useState("");
+  const [shareContactSaving, setShareContactSaving] = useState(false);
+  const [shareContactDeletingId, setShareContactDeletingId] = useState<string | null>(null);
+  const [shareInviteLabel, setShareInviteLabel] = useState("");
+  const [shareInviteGenerating, setShareInviteGenerating] = useState(false);
+  const [shareInviteImporting, setShareInviteImporting] = useState(false);
+  const [shareInviteTokenInput, setShareInviteTokenInput] = useState("");
+  const [lastShareInvite, setLastShareInvite] = useState<ShareContactInvite | null>(null);
+  const [syncthingStatus, setSyncthingStatus] = useState<SyncthingShareStatusSnapshot | null>(null);
+  const [syncthingApplying, setSyncthingApplying] = useState(false);
+  const [incomingOfferActionId, setIncomingOfferActionId] = useState<string | null>(null);
+  const [shareConflictItems, setShareConflictItems] = useState<SyncthingFolderConflict[]>([]);
+  const [shareConflictsLoading, setShareConflictsLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const createFolderInputRef = useRef<HTMLInputElement>(null);
   const filesFetchSeqRef = useRef(0);
   const filesLoadingSeqRef = useRef(0);
+  const finderThumbnailCacheRef = useRef<Record<string, WorkspaceImageThumbnail>>({});
+  const finderThumbnailInflightRef = useRef(new Set<string>());
 
   // Chat
   const [chatSessions, setChatSessions] = useState<SharedChatSession[]>([]);
@@ -929,6 +1345,12 @@ export function Files({
   const [browserLiveHasFrame, setBrowserLiveHasFrame] = useState(false);
   const [browserLiveConnected, setBrowserLiveConnected] = useState(false);
   const [browserLiveError, setBrowserLiveError] = useState<string | null>(null);
+  const [sheetsSession, setSheetsSession] = useState<OfficeAppSession | null>(null);
+  const [docsSession, setDocsSession] = useState<OfficeAppSession | null>(null);
+  const [slidesSession, setSlidesSession] = useState<OfficeAppSession | null>(null);
+  const [sheetsRecent, setSheetsRecent] = useState<OfficeRecentEntry[]>([]);
+  const [docsRecent, setDocsRecent] = useState<OfficeRecentEntry[]>([]);
+  const [slidesRecent, setSlidesRecent] = useState<OfficeRecentEntry[]>([]);
   const browserLiveSocketRef = useRef<WebSocket | null>(null);
   const browserLiveImageRef = useRef<HTMLImageElement | null>(null);
   const browserViewportRef = useRef<HTMLDivElement | null>(null);
@@ -978,6 +1400,9 @@ export function Files({
       if (typeof saved.chatOpen === "boolean") setChatOpen(saved.chatOpen);
       if (typeof saved.chatNavCollapsed === "boolean") setChatNavCollapsed(saved.chatNavCollapsed);
       const savedBrowserOpen = saved.browserOpen === true;
+      if (typeof saved.sheetsOpen === "boolean") setSheetsOpen(saved.sheetsOpen);
+      if (typeof saved.docsOpen === "boolean") setDocsOpen(saved.docsOpen);
+      if (typeof saved.slidesOpen === "boolean") setSlidesOpen(saved.slidesOpen);
       if (typeof saved.terminalOpen === "boolean") setTerminalOpen(saved.terminalOpen);
       if (typeof saved.pluginsOpen === "boolean") setPluginsOpen(saved.pluginsOpen);
       if (typeof saved.skillsOpen === "boolean") setSkillsOpen(saved.skillsOpen);
@@ -1002,6 +1427,18 @@ export function Files({
       if (nextBrowserPos) setBrowserPos(nextBrowserPos);
       const nextBrowserSize = asWindowSize(saved.browserSize);
       if (nextBrowserSize) setBrowserSize(nextBrowserSize);
+      const nextSheetsPos = asWindowPoint(saved.sheetsPos);
+      if (nextSheetsPos) setSheetsPos(nextSheetsPos);
+      const nextSheetsSize = asWindowSize(saved.sheetsSize);
+      if (nextSheetsSize) setSheetsSize(nextSheetsSize);
+      const nextDocsPos = asWindowPoint(saved.docsPos);
+      if (nextDocsPos) setDocsPos(nextDocsPos);
+      const nextDocsSize = asWindowSize(saved.docsSize);
+      if (nextDocsSize) setDocsSize(nextDocsSize);
+      const nextSlidesPos = asWindowPoint(saved.slidesPos);
+      if (nextSlidesPos) setSlidesPos(nextSlidesPos);
+      const nextSlidesSize = asWindowSize(saved.slidesSize);
+      if (nextSlidesSize) setSlidesSize(nextSlidesSize);
       const nextTerminalPos = asWindowPoint(saved.terminalPos);
       if (nextTerminalPos) setTerminalPos(nextTerminalPos);
       const nextTerminalSize = asWindowSize(saved.terminalSize);
@@ -1051,6 +1488,12 @@ export function Files({
       if (typeof saved.terminalInput === "string") {
         setTerminalInput(saved.terminalInput);
       }
+      const nextSheetsRecent = asOfficeRecentEntries(saved.sheetsRecent);
+      if (nextSheetsRecent) setSheetsRecent(nextSheetsRecent);
+      const nextDocsRecent = asOfficeRecentEntries(saved.docsRecent);
+      if (nextDocsRecent) setDocsRecent(nextDocsRecent);
+      const nextSlidesRecent = asOfficeRecentEntries(saved.slidesRecent);
+      if (nextSlidesRecent) setSlidesRecent(nextSlidesRecent);
       if (
         typeof saved.browserEmbeddedPreviewUrl === "string" ||
         saved.browserEmbeddedPreviewUrl === null
@@ -1269,6 +1712,9 @@ export function Files({
     clampResizableWindow(finderPos, finderSize, { w: 320, h: 240 }, setFinderPos, setFinderSize);
     clampResizableWindow(chatPos, chatSize, chatMinSize, setChatPos, setChatSize);
     clampResizableWindow(browserPos, browserSize, { w: 640, h: 420 }, setBrowserPos, setBrowserSize);
+    clampResizableWindow(sheetsPos, sheetsSize, { w: 720, h: 480 }, setSheetsPos, setSheetsSize);
+    clampResizableWindow(docsPos, docsSize, { w: 720, h: 480 }, setDocsPos, setDocsSize);
+    clampResizableWindow(slidesPos, slidesSize, { w: 720, h: 480 }, setSlidesPos, setSlidesSize);
     clampResizableWindow(terminalPos, terminalSize, { w: 680, h: 360 }, setTerminalPos, setTerminalSize);
     clampFixedWindow(pluginsPos, pluginsSize, setPluginsPos);
     clampFixedWindow(skillsPos, skillsSize, setSkillsPos);
@@ -1287,6 +1733,12 @@ export function Files({
     chatMinSize,
     browserPos,
     browserSize,
+    sheetsPos,
+    sheetsSize,
+    docsPos,
+    docsSize,
+    slidesPos,
+    slidesSize,
     terminalPos,
     terminalSize,
     pluginsPos,
@@ -1333,6 +1785,9 @@ export function Files({
       chatOpen,
       chatNavCollapsed,
       browserOpen,
+      sheetsOpen,
+      docsOpen,
+      slidesOpen,
       terminalOpen,
       pluginsOpen,
       skillsOpen,
@@ -1348,6 +1803,12 @@ export function Files({
       chatSize,
       browserPos,
       browserSize,
+      sheetsPos,
+      sheetsSize,
+      docsPos,
+      docsSize,
+      slidesPos,
+      slidesSize,
       terminalPos,
       terminalSize,
       pluginsPos,
@@ -1371,6 +1832,9 @@ export function Files({
       browserEmbeddedPreviewTitle: browserEmbeddedPreview?.title ?? null,
       browserTabs: browserTabs.map(persistBrowserTabState),
       activeBrowserTabId,
+      sheetsRecent,
+      docsRecent,
+      slidesRecent,
       terminalSessionId,
       terminalInput,
       desktopIcons,
@@ -1390,6 +1854,9 @@ export function Files({
     chatOpen,
     chatNavCollapsed,
     browserOpen,
+    sheetsOpen,
+    docsOpen,
+    slidesOpen,
     terminalOpen,
     pluginsOpen,
     skillsOpen,
@@ -1405,6 +1872,12 @@ export function Files({
     chatSize,
     browserPos,
     browserSize,
+    sheetsPos,
+    sheetsSize,
+    docsPos,
+    docsSize,
+    slidesPos,
+    slidesSize,
     terminalPos,
     terminalSize,
     pluginsPos,
@@ -1426,6 +1899,9 @@ export function Files({
     browserEmbeddedPreview,
     browserTabs,
     activeBrowserTabId,
+    sheetsRecent,
+    docsRecent,
+    slidesRecent,
     terminalSessionId,
     terminalInput,
     desktopIcons,
@@ -2602,6 +3078,40 @@ export function Files({
 
   // ── File browser logic ──────────────────────────────────────────────
 
+  const sharedFolderByPath = useMemo(
+    () => new Map(sharedFolders.map((folder) => [folder.path, folder])),
+    [sharedFolders],
+  );
+  const sharedFoldersOrdered = useMemo(() => {
+    return [...sharedFolders].sort((left, right) =>
+      left.path.localeCompare(right.path, undefined, { sensitivity: "base" }),
+    );
+  }, [sharedFolders]);
+  const syncthingFolderStatusByShareId = useMemo(
+    () => new Map((syncthingStatus?.folders ?? []).map((folder) => [folder.shareId, folder])),
+    [syncthingStatus],
+  );
+  const syncthingFolderStatusByPath = useMemo(() => {
+    const map = new Map<string, SyncthingSharedFolderStatus>();
+    for (const folder of syncthingStatus?.folders ?? []) {
+      map.set(folder.path, folder);
+    }
+    return map;
+  }, [syncthingStatus]);
+  const syncthingContactStatusById = useMemo(
+    () => new Map((syncthingStatus?.contacts ?? []).map((contact) => [contact.contactId, contact])),
+    [syncthingStatus],
+  );
+  const incomingOffers = syncthingStatus?.incomingOffers ?? [];
+  const shareTargetSyncthingStatus = shareTargetRecord
+    ? syncthingFolderStatusByShareId.get(shareTargetRecord.id) ?? null
+    : null;
+  const shareTargetIsIncoming = isIncomingSharedFolder(shareTargetRecord);
+
+  useEffect(() => {
+    finderThumbnailCacheRef.current = finderThumbnails;
+  }, [finderThumbnails]);
+
   const fetchFiles = useCallback(async (path: string, options?: { silent?: boolean }) => {
     const silent = options?.silent === true;
     const requestSeq = filesFetchSeqRef.current + 1;
@@ -2638,6 +3148,68 @@ export function Files({
 
   useEffect(() => { if (finderOpen) fetchFiles(currentPath); }, [currentPath, fetchFiles, finderOpen]);
   useEffect(() => {
+    if (!finderOpen || entries.length === 0) {
+      return;
+    }
+    const candidates = entries
+      .filter((entry) => isImageWorkspaceEntry(entry) && entry.size <= MAX_FINDER_THUMBNAIL_BYTES)
+      .slice(0, MAX_FINDER_THUMBNAILS);
+    const pending = candidates.filter((entry) => {
+      const cached = finderThumbnailCacheRef.current[entry.path];
+      if (cached?.modifiedAt === entry.modified_at) {
+        return false;
+      }
+      return !finderThumbnailInflightRef.current.has(entry.path);
+    });
+    if (pending.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    pending.forEach((entry) => finderThumbnailInflightRef.current.add(entry.path));
+
+    void Promise.allSettled(
+      pending.map(async (entry) => {
+        const base64 = await invoke<string>("read_workspace_file_base64", { path: entry.path });
+        return {
+          path: entry.path,
+          modifiedAt: entry.modified_at,
+          dataUrl: workspaceImageDataUrl(entry.name, base64),
+        };
+      }),
+    )
+      .then((results) => {
+        if (cancelled) return;
+        setFinderThumbnails((current) => {
+          const next = { ...current };
+          let changed = false;
+          for (const result of results) {
+            if (result.status !== "fulfilled") {
+              continue;
+            }
+            const thumbnail = result.value;
+            const existing = next[thumbnail.path];
+            if (existing?.modifiedAt === thumbnail.modifiedAt && existing.dataUrl === thumbnail.dataUrl) {
+              continue;
+            }
+            next[thumbnail.path] = {
+              dataUrl: thumbnail.dataUrl,
+              modifiedAt: thumbnail.modifiedAt,
+            };
+            changed = true;
+          }
+          return changed ? next : current;
+        });
+      })
+      .finally(() => {
+        pending.forEach((entry) => finderThumbnailInflightRef.current.delete(entry.path));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [entries, finderOpen]);
+  useEffect(() => {
     if (!finderOpen) return;
     const refreshCurrentFolder = () => {
       if (document.hidden) return;
@@ -2659,10 +3231,195 @@ export function Files({
   }, [currentPath, fetchFiles, finderOpen]);
   useEffect(() => { const h = () => setContextMenu(null); window.addEventListener("click", h); return () => window.removeEventListener("click", h); }, []);
 
+  const loadShareConflicts = useCallback(async (shareId?: string | null, silent = false) => {
+    if (!shareId) {
+      setShareConflictItems([]);
+      return [];
+    }
+    setShareConflictsLoading(true);
+    try {
+      const conflicts = await listSharedWorkspaceFolderConflicts(shareId);
+      setShareConflictItems(conflicts);
+      return conflicts;
+    } catch (e) {
+      setShareConflictItems([]);
+      if (!silent) {
+        throw e;
+      }
+      return [];
+    } finally {
+      setShareConflictsLoading(false);
+    }
+  }, []);
+
+  const refreshShareState = useCallback(async (targetPath?: string) => {
+    const [contacts, folders, targetFolder, nextSyncthingStatus] = await Promise.all([
+      listShareContacts(),
+      listSharedWorkspaceFolders(),
+      targetPath ? getSharedWorkspaceFolder(targetPath) : Promise.resolve(null),
+      getSyncthingShareStatus().catch(() => null),
+    ]);
+    setShareContacts(contacts);
+    setSharedFolders(folders);
+    if (nextSyncthingStatus) {
+      setSyncthingStatus(nextSyncthingStatus);
+    }
+    if (targetPath) {
+      setShareTargetRecord(targetFolder);
+      setShareSelectedContactIds(targetFolder?.members.map((member) => member.contactId) ?? []);
+      await loadShareConflicts(targetFolder?.id ?? null, true);
+    } else {
+      setShareTargetRecord(null);
+      setShareSelectedContactIds([]);
+      setShareConflictItems([]);
+    }
+    return { contacts, folders, targetFolder, syncthingStatus: nextSyncthingStatus };
+  }, [loadShareConflicts]);
+
+  useEffect(() => {
+    void refreshShareState().catch(() => undefined);
+  }, [refreshShareState]);
+
+  async function openShareDialog(entry?: WorkspaceFileEntry | null) {
+    if (entry && !entry.is_directory) return;
+    setShareDialogOpen(true);
+    setShareTargetEntry(entry ?? null);
+    setShareLoading(true);
+    setShareContactName("");
+    setShareContactDeviceId("");
+    setShareInviteTokenInput("");
+    setError(null);
+    try {
+      await refreshShareState(entry?.path);
+    } catch (e) {
+      setError(`Failed to load folder sharing: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setShareLoading(false);
+    }
+  }
+
+  async function selectSharedFolder(folder: SharedWorkspaceFolder) {
+    setShareTargetEntry(sharedFolderWorkspaceEntry(folder));
+    setShareLoading(true);
+    setError(null);
+    try {
+      await refreshShareState(folder.path);
+    } catch (e) {
+      setError(`Failed to load shared folder: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setShareLoading(false);
+    }
+  }
+
+  function clearShareTargetSelection() {
+    setShareTargetEntry(null);
+    setShareTargetRecord(null);
+    setShareSelectedContactIds([]);
+    setShareConflictItems([]);
+  }
+
+  function closeShareDialog() {
+    if (shareSaving || shareContactSaving || shareContactDeletingId || syncthingApplying || incomingOfferActionId) {
+      return;
+    }
+    setShareDialogOpen(false);
+    setShareTargetEntry(null);
+    setShareTargetRecord(null);
+    setShareSelectedContactIds([]);
+    setShareContactName("");
+    setShareContactDeviceId("");
+    setShareInviteTokenInput("");
+    setShareConflictItems([]);
+    setShareLoading(false);
+  }
+
+  async function applySyncthingShareChanges(targetPath?: string) {
+    if (syncthingApplying) return;
+    setSyncthingApplying(true);
+    setError(null);
+    try {
+      const nextStatus = await syncSyncthingShares();
+      setSyncthingStatus(nextStatus);
+      await refreshShareState(targetPath ?? shareTargetEntry?.path);
+    } catch (e) {
+      setError(`Failed to apply Syncthing shares: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSyncthingApplying(false);
+    }
+  }
+
+  async function handleRescanSharedFolder() {
+    if (!shareTargetRecord || syncthingApplying) return;
+    setSyncthingApplying(true);
+    setError(null);
+    try {
+      const nextStatus = await rescanSharedWorkspaceFolder(shareTargetRecord.id);
+      setSyncthingStatus(nextStatus);
+      await refreshShareState(shareTargetEntry?.path);
+    } catch (e) {
+      setError(`Failed to rescan shared folder: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSyncthingApplying(false);
+    }
+  }
+
+  function toggleShareContactSelection(contactId: string) {
+    if (shareTargetIsIncoming) return;
+    setShareSelectedContactIds((current) =>
+      current.includes(contactId)
+        ? current.filter((value) => value !== contactId)
+        : [...current, contactId],
+    );
+  }
+
   function openFolder(path: string) { setCurrentPath(path); setHistory([path]); setHistoryIndex(0); setFinderOpen(true); setSelected(null); }
   function navigateTo(path: string) { const h = history.slice(0, historyIndex + 1); h.push(path); setHistory(h); setHistoryIndex(h.length - 1); setCurrentPath(path); setSelected(null); }
   function goBack() { if (historyIndex > 0) { setHistoryIndex(historyIndex - 1); setCurrentPath(history[historyIndex - 1]); setSelected(null); } }
   function goForward() { if (historyIndex < history.length - 1) { setHistoryIndex(historyIndex + 1); setCurrentPath(history[historyIndex + 1]); setSelected(null); } }
+
+  function openOfficeWindow(kind: OfficeAppKind) {
+    switch (kind) {
+      case "sheets":
+        setSheetsOpen(true);
+        focusWindow("sheets");
+        return;
+      case "docs":
+        setDocsOpen(true);
+        focusWindow("docs");
+        return;
+      case "slides":
+        setSlidesOpen(true);
+        focusWindow("slides");
+        return;
+    }
+  }
+
+  function recordOfficeRecent(kind: OfficeAppKind, entry: WorkspaceFileEntry) {
+    const nextRecent = {
+      path: entry.path,
+      name: entry.name,
+      openedAt: Date.now(),
+    };
+    switch (kind) {
+      case "sheets":
+        setSheetsRecent((current) => pushOfficeRecentEntry(current, nextRecent));
+        return;
+      case "docs":
+        setDocsRecent((current) => pushOfficeRecentEntry(current, nextRecent));
+        return;
+      case "slides":
+        setSlidesRecent((current) => pushOfficeRecentEntry(current, nextRecent));
+        return;
+    }
+  }
+
+  function openOfficeAppHomeInChat() {
+    createNewChatSession();
+  }
+
+  function openRecentOfficePath(path: string) {
+    void openWorkspacePathInBrowser(path);
+  }
 
   function handleEntryClick(entry: WorkspaceFileEntry, e: React.MouseEvent) { e.stopPropagation(); setSelected(entry.path); }
   function handleEntryDoubleClick(entry: WorkspaceFileEntry) {
@@ -2670,8 +3427,7 @@ export function Files({
       navigateTo(entry.path);
       return;
     }
-    const ext = entry.name.split(".").pop()?.toLowerCase() || "";
-    if (HTML_EXTS.has(ext)) {
+    if (workspaceFileCanOpenInBrowser(entry.path)) {
       void openWorkspaceFileInBrowser(entry);
       return;
     }
@@ -2679,44 +3435,96 @@ export function Files({
   }
   function handleContextMenuEntry(entry: WorkspaceFileEntry, e: React.MouseEvent) { e.preventDefault(); e.stopPropagation(); setSelected(entry.path); setContextMenu({ x: e.clientX, y: e.clientY, entry }); }
 
+  async function openWorkspaceFileInOfficeApp(entry: WorkspaceFileEntry) {
+    const officeKind = officeAppKindForPath(entry.path);
+    if (!officeKind) return false;
+    try {
+      setError(null);
+      await ensureOnlyOfficeReady();
+    } catch (e) {
+      setError(`Failed to start ONLYOFFICE: ${e instanceof Error ? e.message : String(e)}`);
+      return true;
+    }
+
+    const nextSession: OfficeAppSession = {
+      path: entry.path,
+      name: entry.name,
+      url: workspaceBrowserUrl(entry.path),
+      launchToken: Date.now(),
+    };
+
+    switch (officeKind) {
+      case "sheets":
+        setSheetsSession(nextSession);
+        recordOfficeRecent("sheets", entry);
+        openOfficeWindow("sheets");
+        break;
+      case "docs":
+        setDocsSession(nextSession);
+        recordOfficeRecent("docs", entry);
+        openOfficeWindow("docs");
+        break;
+      case "slides":
+        setSlidesSession(nextSession);
+        recordOfficeRecent("slides", entry);
+        openOfficeWindow("slides");
+        break;
+    }
+    return true;
+  }
+
   async function openWorkspaceFileInBrowser(entry: WorkspaceFileEntry) {
     if (entry.is_directory) return;
-    const ext = entry.name.split(".").pop()?.toLowerCase() || "";
-    if (!HTML_EXTS.has(ext)) return;
+    if (!workspaceFileCanOpenInBrowser(entry.path)) return;
+    if (workspaceFileUsesOnlyOffice(entry.path) && await openWorkspaceFileInOfficeApp(entry)) {
+      return;
+    }
     const targetUrl = workspaceBrowserUrl(entry.path);
     if (!browserOpen) {
       setBrowserOpen(true);
     }
     focusWindow("browser");
     if (isTrustedLocalPreviewUrl(targetUrl)) {
+      const reloadingCurrentPreview = browserEmbeddedPreview?.url === targetUrl;
       setBrowserEmbeddedPreview({
         url: targetUrl,
         title: entry.name,
       });
       setBrowserUrlInput(presentBrowserUrl(targetUrl));
       setBrowserLoadError(null);
+      if (reloadingCurrentPreview) {
+        await reloadEmbeddedPreview().catch(() => {});
+      }
       return;
     }
     await navigateBrowser(targetUrl);
   }
 
   function showWorkspacePathInDesktop(path: string, looksLikeFile: boolean) {
-    if (!path) {
+    const normalizedPath = normalizeDesktopWorkspacePath(path);
+    if (normalizedPath === null) {
+      return;
+    }
+    if (!normalizedPath) {
       openFolder("");
       return;
     }
     if (looksLikeFile) {
-      openFolder(workspacePathParent(path));
-      setSelected(path);
+      openFolder(workspacePathParent(normalizedPath));
+      setSelected(normalizedPath);
       return;
     }
-    openFolder(path);
+    openFolder(normalizedPath);
   }
 
   async function previewWorkspacePath(path: string) {
+    const normalizedPath = normalizeDesktopWorkspacePath(path);
+    if (normalizedPath === null || !normalizedPath) {
+      return;
+    }
     await handleView({
-      name: workspacePathName(path),
-      path,
+      name: workspacePathName(normalizedPath),
+      path: normalizedPath,
       is_directory: false,
       size: 0,
       modified_at: 0,
@@ -2724,9 +3532,13 @@ export function Files({
   }
 
   async function openWorkspacePathInBrowser(path: string) {
+    const normalizedPath = normalizeDesktopWorkspacePath(path);
+    if (normalizedPath === null || !normalizedPath) {
+      return;
+    }
     await openWorkspaceFileInBrowser({
-      name: workspacePathName(path),
-      path,
+      name: workspacePathName(normalizedPath),
+      path: normalizedPath,
       is_directory: false,
       size: 0,
       modified_at: 0,
@@ -2793,6 +3605,22 @@ export function Files({
     void applyDesktopHandoff(consumeDesktopHandoff());
   }, []);
 
+  useEffect(() => {
+    const onDesktopHandoff = (event: Event) => {
+      const fallback =
+        event instanceof CustomEvent
+          ? (event.detail as DesktopHandoff | null | undefined) ?? null
+          : null;
+      const handoff = consumeDesktopHandoff() ?? fallback;
+      if (!handoff) return;
+      void applyDesktopHandoff(handoff);
+    };
+    window.addEventListener(DESKTOP_HANDOFF_EVENT, onDesktopHandoff);
+    return () => {
+      window.removeEventListener(DESKTOP_HANDOFF_EVENT, onDesktopHandoff);
+    };
+  }, []);
+
   function openBrowserWindow(targetUrl = browserCurrentUrl) {
     if (!browserOpen) {
       setBrowserOpen(true);
@@ -2819,18 +3647,161 @@ export function Files({
     }
   }
 
+  async function submitShareContact() {
+    const trimmedName = shareContactName.trim();
+    if (!trimmedName || shareContactSaving) return;
+    setShareContactSaving(true);
+    setError(null);
+    try {
+      await saveShareContact({
+        displayName: trimmedName,
+        syncthingDeviceId: shareContactDeviceId.trim() || undefined,
+      });
+      setShareContactName("");
+      setShareContactDeviceId("");
+      await refreshShareState(shareTargetEntry?.path);
+    } catch (e) {
+      setError(`Failed to save contact: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setShareContactSaving(false);
+    }
+  }
+
+  async function handleCopyShareInvite() {
+    if (shareInviteGenerating) return;
+    setShareInviteGenerating(true);
+    setError(null);
+    try {
+      const invite = await generateShareContactInvite(shareInviteLabel.trim() || undefined);
+      setLastShareInvite(invite);
+      await navigator.clipboard?.writeText?.(invite.token);
+    } catch (e) {
+      setError(`Failed to generate share invite: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setShareInviteGenerating(false);
+    }
+  }
+
+  async function handleImportShareInvite() {
+    const token = shareInviteTokenInput.trim();
+    if (!token || shareInviteImporting) return;
+    setShareInviteImporting(true);
+    setError(null);
+    try {
+      const contact = await importShareContactInvite(token);
+      setShareInviteTokenInput("");
+      await refreshShareState(shareTargetEntry?.path);
+      setShareSelectedContactIds((current) =>
+        current.includes(contact.id) ? current : [...current, contact.id],
+      );
+    } catch (e) {
+      setError(`Failed to import share invite: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setShareInviteImporting(false);
+    }
+  }
+
+  async function handleAcceptIncomingOffer(offer: SyncthingIncomingFolderOffer) {
+    if (incomingOfferActionId) return;
+    setIncomingOfferActionId(offer.folderId);
+    setError(null);
+    try {
+      const accepted: AcceptedSyncthingIncomingFolder = await acceptSyncthingIncomingFolderOffer(offer.folderId);
+      setSyncthingStatus(accepted.snapshot);
+      setShareTargetEntry({
+        name: workspacePathName(accepted.path),
+        path: accepted.path,
+        is_directory: true,
+        size: 0,
+        modified_at: 0,
+      });
+      await refreshShareState(accepted.path);
+      const parentPath = workspacePathParent(accepted.path);
+      openFolder(parentPath);
+      setSelected(accepted.path);
+    } catch (e) {
+      setError(`Failed to accept incoming share: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIncomingOfferActionId(null);
+    }
+  }
+
+  async function handleRejectIncomingOffer(offer: SyncthingIncomingFolderOffer) {
+    if (incomingOfferActionId) return;
+    setIncomingOfferActionId(offer.folderId);
+    setError(null);
+    try {
+      const nextStatus = await rejectSyncthingIncomingFolderOffer(offer.folderId);
+      setSyncthingStatus(nextStatus);
+      await refreshShareState(shareTargetEntry?.path);
+    } catch (e) {
+      setError(`Failed to dismiss incoming share: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIncomingOfferActionId(null);
+    }
+  }
+
+  async function handleDeleteShareContact(contactId: string) {
+    if (shareContactDeletingId) return;
+    setShareContactDeletingId(contactId);
+    setError(null);
+    try {
+      await deleteShareContact(contactId);
+      await applySyncthingShareChanges(shareTargetEntry?.path);
+    } catch (e) {
+      setError(`Failed to delete contact: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setShareContactDeletingId(null);
+    }
+  }
+
+  async function submitFolderShare() {
+    if (!shareTargetEntry || shareSaving || shareTargetIsIncoming) return;
+    setShareSaving(true);
+    setError(null);
+    try {
+      await saveSharedWorkspaceFolder({
+        path: shareTargetEntry.path,
+        title: shareTargetEntry.name,
+        memberContactIds: shareSelectedContactIds,
+      });
+      await applySyncthingShareChanges(shareTargetEntry.path);
+    } catch (e) {
+      setError(`Failed to save folder sharing: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setShareSaving(false);
+    }
+  }
+
+  async function stopSharingCurrentFolder() {
+    if (!shareTargetRecord || shareSaving) return;
+    setShareSaving(true);
+    setError(null);
+    try {
+      await deleteSharedWorkspaceFolder(shareTargetRecord.id);
+      await refreshShareState(shareTargetEntry?.path);
+      if (shareTargetIsIncoming) {
+        clearShareTargetSelection();
+      } else {
+        await applySyncthingShareChanges(shareTargetEntry?.path);
+      }
+    } catch (e) {
+      setError(
+        `${shareTargetIsIncoming ? "Failed to remove synced folder" : "Failed to stop sharing folder"}: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    } finally {
+      setShareSaving(false);
+    }
+  }
+
   async function handleView(entry: WorkspaceFileEntry) {
     const ext = entry.name.split(".").pop()?.toLowerCase() || "";
     try {
       if (IMAGE_EXTS.has(ext)) {
         const base64 = await invoke<string>("read_workspace_file_base64", { path: entry.path });
-        const mime =
-          ext === "svg"
-            ? "image/svg+xml"
-            : ext === "jpg" || ext === "jpeg"
-              ? "image/jpeg"
-              : `image/${ext}`;
-        setPreview({ kind: "image", name: entry.name, dataUrl: `data:${mime};base64,${base64}` });
+        setPreview({ kind: "image", name: entry.name, dataUrl: workspaceImageDataUrl(entry.name, base64) });
         return;
       }
       if (BINARY_EXTS.has(ext)) {
@@ -2846,7 +3817,16 @@ export function Files({
 
   async function handleDelete(entry: WorkspaceFileEntry) {
     if (!confirm(`Move "${entry.name}" to Trash?`)) return;
-    try { await invoke("delete_workspace_file", { path: entry.path }); setSelected(null); fetchFiles(currentPath); }
+    try {
+      const sharedFolder = entry.is_directory ? sharedFolderByPath.get(entry.path) : null;
+      if (sharedFolder) {
+        await deleteSharedWorkspaceFolder(sharedFolder.id);
+        await refreshShareState(shareTargetEntry?.path);
+      }
+      await invoke("delete_workspace_file", { path: entry.path });
+      setSelected(null);
+      fetchFiles(currentPath);
+    }
     catch (e) { setError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`); }
   }
 
@@ -3018,6 +3998,15 @@ export function Files({
     if (chatOpen) {
       frames.push({ z: windowZ.chat ?? DEFAULT_WINDOW_Z.chat, rect: { x: chatPos.x, y: chatPos.y, w: chatSize.w, h: chatSize.h } });
     }
+    if (sheetsOpen) {
+      frames.push({ z: windowZ.sheets ?? DEFAULT_WINDOW_Z.sheets, rect: { x: sheetsPos.x, y: sheetsPos.y, w: sheetsSize.w, h: sheetsSize.h } });
+    }
+    if (docsOpen) {
+      frames.push({ z: windowZ.docs ?? DEFAULT_WINDOW_Z.docs, rect: { x: docsPos.x, y: docsPos.y, w: docsSize.w, h: docsSize.h } });
+    }
+    if (slidesOpen) {
+      frames.push({ z: windowZ.slides ?? DEFAULT_WINDOW_Z.slides, rect: { x: slidesPos.x, y: slidesPos.y, w: slidesSize.w, h: slidesSize.h } });
+    }
     if (terminalOpen) {
       frames.push({ z: windowZ.terminal ?? DEFAULT_WINDOW_Z.terminal, rect: { x: terminalPos.x, y: terminalPos.y, w: terminalSize.w, h: terminalSize.h } });
     }
@@ -3064,6 +4053,21 @@ export function Files({
     chatPos.y,
     chatSize.w,
     chatSize.h,
+    sheetsOpen,
+    sheetsPos.x,
+    sheetsPos.y,
+    sheetsSize.w,
+    sheetsSize.h,
+    docsOpen,
+    docsPos.x,
+    docsPos.y,
+    docsSize.w,
+    docsSize.h,
+    slidesOpen,
+    slidesPos.x,
+    slidesPos.y,
+    slidesSize.w,
+    slidesSize.h,
     terminalOpen,
     terminalPos.x,
     terminalPos.y,
@@ -3115,6 +4119,9 @@ export function Files({
     desktopBounds.height,
     windowZ.finder,
     windowZ.chat,
+    windowZ.sheets,
+    windowZ.docs,
+    windowZ.slides,
     windowZ.terminal,
     windowZ.plugins,
     windowZ.skills,
@@ -3418,11 +4425,30 @@ export function Files({
                     {entries.map((entry) => {
                       const Icon = getFileIcon(entry.name, entry.is_directory);
                       const iconColor = getFileColor(entry.name, entry.is_directory);
+                      const thumbnail = isImageWorkspaceEntry(entry) ? finderThumbnails[entry.path]?.dataUrl : null;
                       const isSel = selected === entry.path;
+                      const sharedFolder = entry.is_directory ? sharedFolderByPath.get(entry.path) : null;
+                      const folderStatus = sharedFolder ? syncthingFolderStatusByPath.get(entry.path) : null;
                       return (
                         <div key={entry.path} className="flex flex-col items-center p-2 rounded-lg cursor-default" style={{ background: isSel ? "rgba(59,130,246,0.2)" : "transparent" }} onClick={(e) => handleEntryClick(entry, e)} onDoubleClick={() => handleEntryDoubleClick(entry)} onContextMenu={(e) => handleContextMenuEntry(entry, e)}>
-                          {entry.is_directory ? <div className="w-11 h-11 flex items-center justify-center mb-1"><FolderIcon size={44} selected={isSel} /></div> : <div className="w-11 h-11 flex items-center justify-center mb-1"><Icon className="w-8 h-8" style={{ color: iconColor }} strokeWidth={1.2} /></div>}
+                          {entry.is_directory ? (
+                            <div className="w-11 h-11 flex items-center justify-center mb-1"><FolderIcon size={44} selected={isSel} /></div>
+                          ) : thumbnail ? (
+                            <div className="w-11 h-11 mb-1 overflow-hidden" style={{ background: "rgba(255,255,255,0.06)", boxShadow: isSel ? "0 0 0 1px rgba(147,197,253,0.42)" : "inset 0 0 0 1px rgba(255,255,255,0.08)" }}>
+                              <img src={thumbnail} alt={entry.name} className="h-full w-full object-cover" loading="lazy" />
+                            </div>
+                          ) : (
+                            <div className="w-11 h-11 flex items-center justify-center mb-1"><Icon className="w-8 h-8" style={{ color: iconColor }} strokeWidth={1.2} /></div>
+                          )}
                           <span className="text-[10px] text-center leading-tight w-full px-0.5" style={{ color: isSel ? "#fff" : "#ccc", fontWeight: isSel ? 500 : 400, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "break-all" }}>{entry.name}</span>
+                          {sharedFolder && (
+                            <span
+                              className="mt-1 rounded-full px-1.5 py-0.5 text-[9px]"
+                              style={{ background: "rgba(84,163,247,0.16)", color: "#9ed0ff" }}
+                            >
+                              {formatSharedFolderBadge(sharedFolder, folderStatus?.status)}
+                            </span>
+                          )}
                         </div>
                       );
                     })}
@@ -3433,11 +4459,28 @@ export function Files({
                     {entries.map((entry) => {
                       const Icon = getFileIcon(entry.name, entry.is_directory);
                       const iconColor = getFileColor(entry.name, entry.is_directory);
+                      const thumbnail = isImageWorkspaceEntry(entry) ? finderThumbnails[entry.path]?.dataUrl : null;
                       const isSel = selected === entry.path;
+                      const sharedFolder = entry.is_directory ? sharedFolderByPath.get(entry.path) : null;
+                      const folderStatus = sharedFolder ? syncthingFolderStatusByPath.get(entry.path) : null;
                       return (
                         <div key={entry.path} className="flex items-center gap-3 px-4 py-1.5 cursor-default" style={{ background: isSel ? "rgba(59,130,246,0.15)" : "transparent", borderBottom: "1px solid #2a2a2a" }} onClick={(e) => handleEntryClick(entry, e)} onDoubleClick={() => handleEntryDoubleClick(entry)} onContextMenu={(e) => handleContextMenuEntry(entry, e)}>
-                          <Icon className="w-4 h-4 flex-shrink-0" style={{ color: iconColor }} />
-                          <span className="flex-1 text-xs truncate" style={{ color: isSel ? "#fff" : "#ccc", fontWeight: isSel ? 500 : 400 }}>{entry.name}</span>
+                          {thumbnail ? (
+                            <div className="h-4 w-4 flex-shrink-0 overflow-hidden" style={{ background: "rgba(255,255,255,0.06)" }}>
+                              <img src={thumbnail} alt={entry.name} className="h-full w-full object-cover" loading="lazy" />
+                            </div>
+                          ) : (
+                            <Icon className="w-4 h-4 flex-shrink-0" style={{ color: iconColor }} />
+                          )}
+                          <span className="flex-1 min-w-0 text-xs truncate" style={{ color: isSel ? "#fff" : "#ccc", fontWeight: isSel ? 500 : 400 }}>
+                            {entry.name}
+                            {sharedFolder ? (
+                              <span style={{ color: "#7ab9ff", fontWeight: 400 }}>
+                                {" · "}
+                                {formatSharedFolderInlineSummary(sharedFolder, folderStatus?.status)}
+                              </span>
+                            ) : null}
+                          </span>
                           <span className="w-28 text-right text-[11px]" style={{ color: "#666" }}>{formatDate(entry.modified_at)}</span>
                           <span className="w-20 text-right text-[11px]" style={{ color: "#666" }}>{entry.is_directory ? "\u2014" : formatSize(entry.size)}</span>
                         </div>
@@ -3459,6 +4502,7 @@ export function Files({
           {contextMenu && !contextMenu.entry && (
             <div className="fixed py-1 rounded-lg min-w-[180px] animate-fade-in" style={{ left: contextMenu.x, top: contextMenu.y, zIndex: DESKTOP_CONTEXT_MENU_Z, background: "rgba(30,30,30,0.9)", backdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 8px 32px rgba(0,0,0,0.4)" }} onClick={(e) => e.stopPropagation()}>
               <button className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/10 text-left text-white/80" onClick={() => { handleCreateFolder(finderOpen ? currentPath : ""); setContextMenu(null); }}><Plus className="w-3.5 h-3.5" />New Folder</button>
+              <button className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/10 text-left text-white/80" onClick={() => { void openShareDialog(); setContextMenu(null); }}><Users className="w-3.5 h-3.5" />Sharing…</button>
               <button className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/10 text-left text-white/80" onClick={() => { openBrowserWindow(); setContextMenu(null); }}><Globe className="w-3.5 h-3.5" />Open Browser</button>
               <button className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/10 text-left text-white/80" onClick={() => { openTerminalWindow(); setContextMenu(null); }}><Terminal className="w-3.5 h-3.5" />Open Terminal</button>
               <button className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/10 text-left text-white/80" onClick={() => { setShowWallpaperPicker(true); setContextMenu(null); }}><Image className="w-3.5 h-3.5" />Change Wallpaper</button>
@@ -3469,8 +4513,11 @@ export function Files({
           {contextMenu && contextMenu.entry && (
             <div className="fixed py-1 rounded-lg min-w-[160px] animate-fade-in" style={{ left: contextMenu.x, top: contextMenu.y, zIndex: DESKTOP_CONTEXT_MENU_Z + 1, background: "rgba(30,30,30,0.95)", backdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }} onClick={(e) => e.stopPropagation()}>
               <button className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/10 text-left text-white/80" onClick={() => { handleEntryDoubleClick(contextMenu.entry!); setContextMenu(null); }}><Folder className="w-3.5 h-3.5" style={{ color: "#888" }} />Open</button>
-              {!contextMenu.entry.is_directory && HTML_EXTS.has(contextMenu.entry.name.split(".").pop()?.toLowerCase() || "") && (
-                <button className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/10 text-left text-white/80" onClick={() => { void openWorkspaceFileInBrowser(contextMenu.entry!); setContextMenu(null); }}><Globe className="w-3.5 h-3.5" style={{ color: "#888" }} />Open in Browser</button>
+              {contextMenu.entry.is_directory && (
+                <button className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/10 text-left text-white/80" onClick={() => { void openShareDialog(contextMenu.entry!); setContextMenu(null); }}><Users className="w-3.5 h-3.5" style={{ color: "#888" }} />Share Folder…</button>
+              )}
+              {!contextMenu.entry.is_directory && workspaceFileCanOpenInBrowser(contextMenu.entry.path) && (
+                <button className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/10 text-left text-white/80" onClick={() => { void openWorkspaceFileInBrowser(contextMenu.entry!); setContextMenu(null); }}><Globe className="w-3.5 h-3.5" style={{ color: "#888" }} />{workspaceOpenLabel(contextMenu.entry.path)}</button>
               )}
               {!contextMenu.entry.is_directory && <button className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/10 text-left text-white/80" onClick={() => { handleView(contextMenu.entry!); setContextMenu(null); }}><Eye className="w-3.5 h-3.5" style={{ color: "#888" }} />Quick Look</button>}
               <button className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/10 text-left text-white/80" onClick={() => { void copyDesktopPath(contextMenu.entry!.path); setContextMenu(null); }}><FileText className="w-3.5 h-3.5" style={{ color: "#888" }} />Copy Path</button>
@@ -3576,6 +4623,522 @@ export function Files({
             <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[70] flex items-center gap-2 px-4 py-2 rounded-lg text-xs animate-fade-in" style={{ background: "rgba(220,38,38,0.9)", color: "white", backdropFilter: "blur(8px)", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }} onClick={(e) => e.stopPropagation()}>
               <span className="flex-1">{error}</span>
               <button onClick={() => setError(null)} className="font-medium underline">Dismiss</button>
+            </div>
+          )}
+
+          {shareDialogOpen && (
+            <div
+              className="absolute inset-0 flex items-center justify-center"
+              style={{ zIndex: DESKTOP_MODAL_Z, background: "rgba(0,0,0,0.34)", backdropFilter: "blur(6px)" }}
+              onClick={closeShareDialog}
+            >
+              <div
+                className="w-full max-w-xl rounded-2xl p-4"
+                style={{
+                  background: "rgba(28,28,30,0.94)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  boxShadow: "0 24px 60px rgba(0,0,0,0.45)",
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold" style={{ color: "#fff" }}>
+                      Folder Sharing
+                    </p>
+                    <p className="mt-1 text-xs" style={{ color: "#9a9a9a" }}>
+                      {shareTargetEntry ? `/${shareTargetEntry.path}` : "Manage contacts, incoming shares, and Syncthing status."}
+                    </p>
+                    <p className="mt-2 text-[11px]" style={{ color: "#7ab9ff" }}>
+                      {shareTargetRecord
+                        ? shareTargetIsIncoming
+                          ? `Accepted from ${formatShareCountLabel(shareTargetRecord.members.length)} · ${formatShareSyncStatus(shareTargetSyncthingStatus?.status ?? shareTargetRecord.syncStatus)}`
+                          : `Shared with ${formatShareCountLabel(shareTargetRecord.members.length)} · ${formatShareSyncStatus(shareTargetSyncthingStatus?.status ?? shareTargetRecord.syncStatus)}`
+                        : shareTargetEntry
+                          ? "Choose members, then apply the share to Syncthing."
+                          : sharedFoldersOrdered.length > 0
+                            ? `Manage ${sharedFoldersOrdered.length} shared ${sharedFoldersOrdered.length === 1 ? "folder" : "folders"}, contacts, incoming shares, and Syncthing status.`
+                          : incomingOffers.length > 0
+                            ? `${incomingOffers.length} incoming ${incomingOffers.length === 1 ? "share offer is" : "share offers are"} waiting for review.`
+                            : "No incoming share offers right now."}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {shareTargetEntry ? (
+                      <button
+                        onClick={clearShareTargetSelection}
+                        disabled={shareSaving || shareContactSaving || shareContactDeletingId !== null || syncthingApplying || incomingOfferActionId !== null}
+                        className="rounded-lg px-2 py-1 text-xs"
+                        style={{ background: "rgba(255,255,255,0.08)", color: "#d0d0d0" }}
+                      >
+                        All Shares
+                      </button>
+                    ) : null}
+                    <button
+                      onClick={closeShareDialog}
+                      disabled={shareSaving || shareContactSaving || shareContactDeletingId !== null || syncthingApplying || incomingOfferActionId !== null}
+                      className="rounded-lg px-2 py-1 text-xs"
+                      style={{ background: "rgba(255,255,255,0.08)", color: "#d0d0d0" }}
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+
+                {shareLoading ? (
+                  <div className="flex items-center justify-center py-10 text-sm" style={{ color: "#d0d0d0" }}>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Loading sharing settings…
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div
+                      className="rounded-xl px-4 py-3"
+                      style={{ background: "rgba(84,163,247,0.12)", border: "1px solid rgba(84,163,247,0.18)" }}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium uppercase tracking-wide" style={{ color: "#9ed0ff" }}>
+                            Syncthing
+                          </p>
+                          <p className="mt-1 text-sm" style={{ color: "#fff" }}>
+                            {formatSyncthingSummary(syncthingStatus)}
+                          </p>
+                          {syncthingStatus?.localDeviceId ? (
+                            <p className="mt-1 text-[11px] break-all" style={{ color: "#c8e5ff" }}>
+                              This device ID: {syncthingStatus.localDeviceId}
+                            </p>
+                          ) : null}
+                          {syncthingStatus?.warning ? (
+                            <p className="mt-2 text-[11px]" style={{ color: "#a8cdeb" }}>
+                              {syncthingStatus.warning}
+                            </p>
+                          ) : null}
+                          {shareTargetSyncthingStatus?.message ? (
+                            <p className="mt-2 text-[11px]" style={{ color: "#d7eaff" }}>
+                              {shareTargetSyncthingStatus.message}
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="flex flex-col items-end gap-2">
+                          <input
+                            type="text"
+                            value={shareInviteLabel}
+                            onChange={(e) => setShareInviteLabel(e.target.value)}
+                            disabled={shareInviteGenerating || syncthingApplying}
+                            className="w-48 rounded-lg px-3 py-1.5 text-xs outline-none"
+                            style={{
+                              background: "rgba(255,255,255,0.08)",
+                              color: "#fff",
+                              border: "1px solid rgba(255,255,255,0.12)",
+                            }}
+                            placeholder="Invite label (optional)"
+                          />
+                          <button
+                            onClick={() => { void handleCopyShareInvite(); }}
+                            disabled={shareInviteGenerating || syncthingApplying}
+                            className="rounded-lg px-3 py-1.5 text-xs disabled:opacity-50"
+                            style={{ background: "rgba(255,255,255,0.08)", color: "#d0d0d0" }}
+                          >
+                            {shareInviteGenerating ? "Copying…" : "Copy My Invite"}
+                          </button>
+                          <button
+                            onClick={() => { void applySyncthingShareChanges(shareTargetEntry?.path); }}
+                            disabled={syncthingApplying || shareSaving || shareContactSaving}
+                            className="rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+                            style={{ background: "#54a3f7", color: "#fff" }}
+                          >
+                            {syncthingApplying ? "Applying…" : syncthingStatus?.running ? "Apply Changes" : "Start Syncthing"}
+                          </button>
+                          {shareTargetRecord ? (
+                            <button
+                              onClick={() => { void handleRescanSharedFolder(); }}
+                              disabled={syncthingApplying}
+                              className="rounded-lg px-3 py-1.5 text-xs disabled:opacity-50"
+                              style={{ background: "rgba(255,255,255,0.08)", color: "#d0d0d0" }}
+                            >
+                              Rescan Folder
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                      {lastShareInvite ? (
+                        <p className="mt-3 text-[11px]" style={{ color: "#c8e5ff" }}>
+                          Invite copied for {lastShareInvite.displayName} · {formatShortDeviceId(lastShareInvite.syncthingDeviceId)}
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <div>
+                      <p className="mb-2 text-xs font-medium uppercase tracking-wide" style={{ color: "#9a9a9a" }}>
+                        Incoming Shared Folders
+                      </p>
+                      <div
+                        className="max-h-60 overflow-auto rounded-xl"
+                        style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)" }}
+                      >
+                        {incomingOffers.length === 0 ? (
+                          <div className="px-4 py-5 text-sm" style={{ color: "#b5b5b5" }}>
+                            When someone shares a Syncthing folder with this device, it will appear here for acceptance into `/shared/...`.
+                          </div>
+                        ) : (
+                          incomingOffers.map((offer) => (
+                            <div
+                              key={offer.folderId}
+                              className="px-4 py-3"
+                              style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-sm font-medium" style={{ color: "#fff" }}>
+                                    {offer.label}
+                                  </div>
+                                  <div className="mt-1 text-[11px]" style={{ color: "#9a9a9a" }}>
+                                    {formatIncomingOfferStatus(offer.status)} · {offer.targetPath}
+                                  </div>
+                                  <div className="mt-1 text-[11px]" style={{ color: "#9ed0ff" }}>
+                                    From {offer.peers.map((peer) => peer.displayName).join(", ")}
+                                  </div>
+                                  {offer.message ? (
+                                    <div className="mt-1 text-[11px]" style={{ color: "#b8b8b8" }}>
+                                      {offer.message}
+                                    </div>
+                                  ) : null}
+                                  {offer.peers.length > 0 ? (
+                                    <div className="mt-2 space-y-1">
+                                      {offer.peers.map((peer) => (
+                                        <div key={`${offer.folderId}-${peer.deviceId}`} className="text-[11px]" style={{ color: "#a8a8a8" }}>
+                                          {peer.displayName} · {formatShortDeviceId(peer.deviceId)}
+                                          {peer.connected ? " · Connected" : " · Offline"}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                </div>
+                                <div className="flex flex-col items-end gap-2">
+                                  <button
+                                    onClick={() => { void handleAcceptIncomingOffer(offer); }}
+                                    disabled={incomingOfferActionId !== null || offer.status === "encrypted_offer"}
+                                    className="rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+                                    style={{ background: "#54a3f7", color: "#fff" }}
+                                  >
+                                    {incomingOfferActionId === offer.folderId ? "Accepting…" : "Accept"}
+                                  </button>
+                                  <button
+                                    onClick={() => { void handleRejectIncomingOffer(offer); }}
+                                    disabled={incomingOfferActionId !== null}
+                                    className="rounded-lg px-3 py-1.5 text-xs disabled:opacity-50"
+                                    style={{ background: "rgba(255,255,255,0.08)", color: "#d0d0d0" }}
+                                  >
+                                    Dismiss
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="mb-2 text-xs font-medium uppercase tracking-wide" style={{ color: "#9a9a9a" }}>
+                        Shared Folders
+                      </p>
+                      <div
+                        className="max-h-60 overflow-auto rounded-xl"
+                        style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)" }}
+                      >
+                        {sharedFoldersOrdered.length === 0 ? (
+                          <div className="px-4 py-5 text-sm" style={{ color: "#b5b5b5" }}>
+                            Shared folders you create or accept will appear here.
+                          </div>
+                        ) : (
+                          sharedFoldersOrdered.map((folder) => {
+                            const folderStatus = syncthingFolderStatusByShareId.get(folder.id);
+                            const selectedFolder = shareTargetRecord?.id === folder.id || shareTargetEntry?.path === folder.path;
+                            const directionLabel = isIncomingSharedFolder(folder) ? "Accepted incoming folder" : "Outgoing shared folder";
+                            return (
+                              <div
+                                key={folder.id}
+                                className="flex items-start justify-between gap-3 px-4 py-3"
+                                style={{
+                                  borderBottom: "1px solid rgba(255,255,255,0.06)",
+                                  background: selectedFolder ? "rgba(84,163,247,0.12)" : "transparent",
+                                }}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => { void selectSharedFolder(folder); }}
+                                  className="min-w-0 flex-1 text-left"
+                                >
+                                  <div className="truncate text-sm font-medium" style={{ color: "#fff" }}>
+                                    {folder.title || workspacePathName(folder.path)}
+                                  </div>
+                                  <div className="mt-1 text-[11px]" style={{ color: "#9a9a9a" }}>
+                                    /{folder.path}
+                                  </div>
+                                  <div className="mt-1 text-[11px]" style={{ color: "#9ed0ff" }}>
+                                    {formatSharedFolderInlineSummary(folder, folderStatus?.status)}
+                                  </div>
+                                  <div className="mt-1 text-[11px]" style={{ color: "#b8b8b8" }}>
+                                    {directionLabel}
+                                  </div>
+                                </button>
+                                <div className="flex flex-col items-end gap-2">
+                                  <button
+                                    onClick={() => { void selectSharedFolder(folder); }}
+                                    className="rounded-lg px-3 py-1.5 text-xs font-medium"
+                                    style={{ background: "#54a3f7", color: "#fff" }}
+                                  >
+                                    {selectedFolder ? "Selected" : "Manage"}
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      openFolder(folder.path);
+                                      setSelected(null);
+                                    }}
+                                    className="rounded-lg px-3 py-1.5 text-xs"
+                                    style={{ background: "rgba(255,255,255,0.08)", color: "#d0d0d0" }}
+                                  >
+                                    Open
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="mb-2 text-xs font-medium uppercase tracking-wide" style={{ color: "#9a9a9a" }}>
+                        People
+                      </p>
+                      {shareTargetIsIncoming ? (
+                        <p className="mb-2 text-[11px]" style={{ color: "#9ed0ff" }}>
+                          This folder was accepted from remote devices. Member changes need to be made on the sending device.
+                        </p>
+                      ) : null}
+                      <div
+                        className="max-h-56 overflow-auto rounded-xl"
+                        style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)" }}
+                      >
+                        {shareContacts.length === 0 ? (
+                          <div className="px-4 py-5 text-sm" style={{ color: "#b5b5b5" }}>
+                            Add a contact like `Melissa Laptop` or `Shreekara Desktop`, then choose which folders they receive.
+                          </div>
+                        ) : (
+                          shareContacts.map((contact) => {
+                            const checked = shareSelectedContactIds.includes(contact.id);
+                            const contactStatus = syncthingContactStatusById.get(contact.id);
+                            return (
+                              <label
+                                key={contact.id}
+                                className="flex items-start gap-3 px-4 py-3"
+                                style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleShareContactSelection(contact.id)}
+                                  className="mt-0.5"
+                                  disabled={shareSaving || shareTargetIsIncoming}
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-sm font-medium" style={{ color: "#fff" }}>
+                                    {contact.displayName}
+                                  </div>
+                                  <div className="mt-1 text-[11px]" style={{ color: "#9a9a9a" }}>
+                                    {contact.syncthingDeviceId
+                                      ? `Device ID: ${formatShortDeviceId(contact.syncthingDeviceId)}`
+                                      : "Device ID pending"}
+                                  </div>
+                                  <div className="mt-1 text-[11px]" style={{ color: contactStatus?.status === "connected" ? "#9ed0ff" : "#a8a8a8" }}>
+                                    {formatSyncthingContactStatus(contactStatus?.status ?? contact.inviteState)}
+                                    {contactStatus?.lastSeen ? ` · Last seen ${contactStatus.lastSeen}` : ""}
+                                  </div>
+                                  {contactStatus?.message ? (
+                                    <div className="mt-1 text-[11px]" style={{ color: "#b8b8b8" }}>
+                                      {contactStatus.message}
+                                    </div>
+                                  ) : null}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => { void handleDeleteShareContact(contact.id); }}
+                                  disabled={shareContactDeletingId !== null || shareSaving || syncthingApplying}
+                                  className="rounded-md px-2 py-1 text-[11px]"
+                                  style={{ background: "rgba(255,255,255,0.08)", color: "#ffb4b0" }}
+                                >
+                                  {shareContactDeletingId === contact.id ? "Removing…" : "Remove"}
+                                </button>
+                              </label>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="mb-2 text-xs font-medium uppercase tracking-wide" style={{ color: "#9a9a9a" }}>
+                        Add Contact
+                      </p>
+                      <div className="grid gap-2 md:grid-cols-[1.2fr,1.8fr,auto]">
+                        <input
+                          type="text"
+                          value={shareContactName}
+                          disabled={shareContactSaving || syncthingApplying}
+                          onChange={(e) => setShareContactName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void submitShareContact();
+                            }
+                          }}
+                          className="w-full rounded-xl px-3 py-2 text-sm outline-none"
+                          style={{
+                            background: "rgba(255,255,255,0.08)",
+                            color: "#fff",
+                            border: "1px solid rgba(255,255,255,0.12)",
+                          }}
+                          placeholder="Melissa Laptop"
+                        />
+                        <input
+                          type="text"
+                          value={shareContactDeviceId}
+                          disabled={shareContactSaving || syncthingApplying}
+                          onChange={(e) => setShareContactDeviceId(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void submitShareContact();
+                            }
+                          }}
+                          className="w-full rounded-xl px-3 py-2 text-sm outline-none"
+                          style={{
+                            background: "rgba(255,255,255,0.08)",
+                            color: "#fff",
+                            border: "1px solid rgba(255,255,255,0.12)",
+                          }}
+                          placeholder="Syncthing device ID (optional for now)"
+                        />
+                        <button
+                          onClick={() => { void submitShareContact(); }}
+                          disabled={!shareContactName.trim() || shareContactSaving || syncthingApplying}
+                          className="rounded-xl px-3 py-2 text-xs font-medium disabled:opacity-50"
+                          style={{ background: "#54a3f7", color: "#fff" }}
+                        >
+                          {shareContactSaving ? "Saving…" : "Add"}
+                        </button>
+                      </div>
+                      <div className="mt-3 grid gap-2 md:grid-cols-[1fr,auto]">
+                        <textarea
+                          value={shareInviteTokenInput}
+                          disabled={shareInviteImporting || syncthingApplying}
+                          onChange={(e) => setShareInviteTokenInput(e.target.value)}
+                          className="min-h-[78px] w-full rounded-xl px-3 py-2 text-sm outline-none resize-none"
+                          style={{
+                            background: "rgba(255,255,255,0.08)",
+                            color: "#fff",
+                            border: "1px solid rgba(255,255,255,0.12)",
+                          }}
+                          placeholder="Paste a copied invite token to import the device and name automatically"
+                        />
+                        <button
+                          onClick={() => { void handleImportShareInvite(); }}
+                          disabled={!shareInviteTokenInput.trim() || shareInviteImporting || syncthingApplying}
+                          className="rounded-xl px-3 py-2 text-xs font-medium disabled:opacity-50"
+                          style={{ background: "#54a3f7", color: "#fff" }}
+                        >
+                          {shareInviteImporting ? "Importing…" : "Import Invite"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {shareTargetRecord ? (
+                      <div>
+                        <p className="mb-2 text-xs font-medium uppercase tracking-wide" style={{ color: "#9a9a9a" }}>
+                          Folder Status
+                        </p>
+                        <div
+                          className="rounded-xl px-4 py-3 text-[11px]"
+                          style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)", color: "#cfcfcf" }}
+                        >
+                          <p>
+                            {formatShareSyncStatus(shareTargetSyncthingStatus?.status ?? shareTargetRecord.syncStatus)}
+                            {shareTargetSyncthingStatus?.state ? ` · ${shareTargetSyncthingStatus.state}` : ""}
+                          </p>
+                          <p className="mt-1" style={{ color: "#9a9a9a" }}>
+                            {shareTargetIsIncoming ? "Remote devices ready" : "Members ready"}: {shareTargetSyncthingStatus?.configuredMemberCount ?? shareTargetRecord.members.length}
+                            {shareTargetSyncthingStatus ? ` · Connected now: ${shareTargetSyncthingStatus.connectedMemberCount}` : ""}
+                            {shareTargetSyncthingStatus && (shareTargetSyncthingStatus.needItems > 0 || shareTargetSyncthingStatus.needBytes > 0)
+                              ? ` · Need: ${shareTargetSyncthingStatus.needItems} items / ${formatSize(shareTargetSyncthingStatus.needBytes)}`
+                              : ""}
+                            {shareTargetSyncthingStatus && shareTargetSyncthingStatus.pullErrors > 0
+                              ? ` · Errors: ${shareTargetSyncthingStatus.pullErrors}`
+                              : ""}
+                          </p>
+                          {shareTargetSyncthingStatus?.lastScan ? (
+                            <p className="mt-1" style={{ color: "#9a9a9a" }}>
+                              Last scan: {shareTargetSyncthingStatus.lastScan}
+                              {shareTargetSyncthingStatus.lastFileAt ? ` · Last file activity: ${shareTargetSyncthingStatus.lastFileAt}` : ""}
+                            </p>
+                          ) : null}
+                          <p className="mt-2" style={{ color: "#9a9a9a" }}>
+                            Conflicts: {shareConflictsLoading ? "Loading…" : shareConflictItems.length}
+                          </p>
+                          {!shareConflictsLoading && shareConflictItems.length > 0 ? (
+                            <div className="mt-2 max-h-24 overflow-auto space-y-1">
+                              {shareConflictItems.slice(0, 5).map((conflict) => (
+                                <div key={conflict.path} className="truncate" style={{ color: "#ffcf9e" }}>
+                                  {conflict.path}
+                                </div>
+                              ))}
+                              {shareConflictItems.length > 5 ? (
+                                <div style={{ color: "#9a9a9a" }}>
+                                  +{shareConflictItems.length - 5} more conflict files
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="flex items-center justify-between gap-3 pt-2">
+                      <div className="text-[11px]" style={{ color: "#8d8d8d" }}>
+                        {shareTargetEntry
+                          ? shareTargetIsIncoming
+                            ? `Accepted from ${formatShareCountLabel(shareSelectedContactIds.length)}. Member changes happen on the sender's device.`
+                            : `Selected: ${formatShareCountLabel(shareSelectedContactIds.length)}`
+                          : "Open Share Folder… on a workspace folder to assign members."}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {shareTargetRecord ? (
+                          <button
+                            onClick={() => { void stopSharingCurrentFolder(); }}
+                            disabled={shareSaving || syncthingApplying}
+                            className="rounded-lg px-3 py-1.5 text-xs"
+                            style={{ background: "rgba(255,255,255,0.08)", color: "#ffb4b0" }}
+                          >
+                            {shareSaving ? "Updating…" : shareTargetIsIncoming ? "Remove Sync" : "Stop Sharing"}
+                          </button>
+                        ) : null}
+                        {!shareTargetIsIncoming ? (
+                          <button
+                            onClick={() => { void submitFolderShare(); }}
+                            disabled={!shareTargetEntry || shareSelectedContactIds.length === 0 || shareSaving || syncthingApplying}
+                            className="rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+                            style={{ background: "#54a3f7", color: "#fff" }}
+                          >
+                            {shareSaving ? "Saving…" : shareTargetRecord ? "Save Members" : "Share Folder"}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -4119,6 +5682,150 @@ export function Files({
             </AppWindow>
           )}
 
+          {sheetsOpen && (
+            <AppWindow
+              title="Sheets"
+              icon={LayoutGrid}
+              position={sheetsPos}
+              size={sheetsSize}
+              zIndex={windowZ.sheets ?? DEFAULT_WINDOW_Z.sheets}
+              glass={false}
+              onClose={() => { setSheetsOpen(false); setSheetsSession(null); }}
+              onFocus={() => focusWindow("sheets")}
+              onDragStart={(e) =>
+                startWindowDrag(e, sheetsDragRef, sheetsPos, sheetsSize, setSheetsPos, "sheets")
+              }
+              onResizeStart={(direction, e) =>
+                startWindowResize(
+                  e,
+                  direction,
+                  sheetsResizeRef,
+                  sheetsPos,
+                  sheetsSize,
+                  setSheetsPos,
+                  setSheetsSize,
+                  "sheets",
+                  { w: 720, h: 480 },
+                )
+              }
+            >
+              <div className="h-full bg-white">
+                {sheetsSession ? (
+                  <iframe
+                    key={`${sheetsSession.path}:${sheetsSession.launchToken}`}
+                    src={officeAppLaunchUrl(sheetsSession)}
+                    title={sheetsSession.name}
+                    className="block h-full w-full border-0 bg-white"
+                    allow="clipboard-read; clipboard-write; fullscreen"
+                  />
+                ) : (
+                  <OfficeHomePanel
+                    kind="sheets"
+                    recent={sheetsRecent}
+                    onOpenRecent={openRecentOfficePath}
+                    onOpenChat={openOfficeAppHomeInChat}
+                  />
+                )}
+              </div>
+            </AppWindow>
+          )}
+
+          {docsOpen && (
+            <AppWindow
+              title="Docs"
+              icon={FileText}
+              position={docsPos}
+              size={docsSize}
+              zIndex={windowZ.docs ?? DEFAULT_WINDOW_Z.docs}
+              glass={false}
+              onClose={() => { setDocsOpen(false); setDocsSession(null); }}
+              onFocus={() => focusWindow("docs")}
+              onDragStart={(e) =>
+                startWindowDrag(e, docsDragRef, docsPos, docsSize, setDocsPos, "docs")
+              }
+              onResizeStart={(direction, e) =>
+                startWindowResize(
+                  e,
+                  direction,
+                  docsResizeRef,
+                  docsPos,
+                  docsSize,
+                  setDocsPos,
+                  setDocsSize,
+                  "docs",
+                  { w: 720, h: 480 },
+                )
+              }
+            >
+              <div className="h-full bg-white">
+                {docsSession ? (
+                  <iframe
+                    key={`${docsSession.path}:${docsSession.launchToken}`}
+                    src={officeAppLaunchUrl(docsSession)}
+                    title={docsSession.name}
+                    className="block h-full w-full border-0 bg-white"
+                    allow="clipboard-read; clipboard-write; fullscreen"
+                  />
+                ) : (
+                  <OfficeHomePanel
+                    kind="docs"
+                    recent={docsRecent}
+                    onOpenRecent={openRecentOfficePath}
+                    onOpenChat={openOfficeAppHomeInChat}
+                  />
+                )}
+              </div>
+            </AppWindow>
+          )}
+
+          {slidesOpen && (
+            <AppWindow
+              title="Slides"
+              icon={Image}
+              position={slidesPos}
+              size={slidesSize}
+              zIndex={windowZ.slides ?? DEFAULT_WINDOW_Z.slides}
+              glass={false}
+              onClose={() => { setSlidesOpen(false); setSlidesSession(null); }}
+              onFocus={() => focusWindow("slides")}
+              onDragStart={(e) =>
+                startWindowDrag(e, slidesDragRef, slidesPos, slidesSize, setSlidesPos, "slides")
+              }
+              onResizeStart={(direction, e) =>
+                startWindowResize(
+                  e,
+                  direction,
+                  slidesResizeRef,
+                  slidesPos,
+                  slidesSize,
+                  setSlidesPos,
+                  setSlidesSize,
+                  "slides",
+                  { w: 720, h: 480 },
+                )
+              }
+            >
+              <div className="h-full bg-white">
+                {slidesSession ? (
+                  <iframe
+                    key={`${slidesSession.path}:${slidesSession.launchToken}`}
+                    src={officeAppLaunchUrl(slidesSession)}
+                    title={slidesSession.name}
+                    className="block h-full w-full border-0 bg-white"
+                    allow="clipboard-read; clipboard-write; fullscreen"
+                  />
+                ) : (
+                  <OfficeHomePanel
+                    kind="slides"
+                    recent={slidesRecent}
+                    onOpenRecent={openRecentOfficePath}
+                    onOpenChat={openOfficeAppHomeInChat}
+                  />
+                )}
+              </div>
+            </AppWindow>
+          )}
+
           {/* ── TERMINAL WINDOW ─────────────────────────────────────── */}
           {terminalOpen && (
             <AppWindow
@@ -4483,6 +6190,51 @@ export function Files({
                 style={{ background: "linear-gradient(180deg, #0ea5e9 0%, #0284c7 100%)", boxShadow: "0 3px 10px rgba(2,132,199,0.4)" }}
               >
                 <Globe className="w-6 h-6 text-white" />
+              </div>
+            </DockIconButton>
+
+            <DockIconButton
+              label="Sheets"
+              active={sheetsOpen}
+              onClick={() => {
+                openOfficeWindow("sheets");
+              }}
+            >
+              <div
+                className="w-12 h-12 rounded-[14px] flex items-center justify-center transition-all duration-200 group-hover:scale-[1.15] group-hover:-translate-y-2.5"
+                style={{ background: "linear-gradient(180deg, #34d399 0%, #059669 100%)", boxShadow: "0 3px 10px rgba(5,150,105,0.38)" }}
+              >
+                <LayoutGrid className="w-6 h-6 text-white" />
+              </div>
+            </DockIconButton>
+
+            <DockIconButton
+              label="Docs"
+              active={docsOpen}
+              onClick={() => {
+                openOfficeWindow("docs");
+              }}
+            >
+              <div
+                className="w-12 h-12 rounded-[14px] flex items-center justify-center transition-all duration-200 group-hover:scale-[1.15] group-hover:-translate-y-2.5"
+                style={{ background: "linear-gradient(180deg, #60a5fa 0%, #2563eb 100%)", boxShadow: "0 3px 10px rgba(37,99,235,0.38)" }}
+              >
+                <FileText className="w-6 h-6 text-white" />
+              </div>
+            </DockIconButton>
+
+            <DockIconButton
+              label="Slides"
+              active={slidesOpen}
+              onClick={() => {
+                openOfficeWindow("slides");
+              }}
+            >
+              <div
+                className="w-12 h-12 rounded-[14px] flex items-center justify-center transition-all duration-200 group-hover:scale-[1.15] group-hover:-translate-y-2.5"
+                style={{ background: "linear-gradient(180deg, #fbbf24 0%, #f97316 100%)", boxShadow: "0 3px 10px rgba(249,115,22,0.34)" }}
+              >
+                <Image className="w-6 h-6 text-white" />
               </div>
             </DockIconButton>
 

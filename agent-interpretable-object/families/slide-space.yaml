@@ -1,0 +1,56 @@
+name: slide-space
+purpose: Reusable family for ordered decks of positioned visual frames.
+
+keywords:
+  - deck
+  - slide
+  - frame
+  - layout
+  - notes
+  - theme
+
+structure:
+  root_object:
+    kind: deck_like
+    parts:
+      - slide_like
+  slide_like:
+    parts:
+      - frame_like
+      - notes_like
+
+relations:
+  - verb: contains
+    source: deck_like
+    target: slide_like
+  - verb: positions
+    source: frame_like
+    target: content_like
+  - verb: follows
+    source: slide_like
+    target: slide_like
+
+views:
+  - slide-view
+  - outline-view
+
+actions:
+  - create-slide
+  - reorder-slide
+  - set-title
+  - set-body
+
+invariants:
+  - slide order is meaningful
+  - visible content belongs to a slide
+
+capabilities:
+  baseline:
+    - slide read
+    - slide write
+
+loss_boundary:
+  typical:
+    - transitions
+    - animations
+    - theme internals
