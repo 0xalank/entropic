@@ -228,6 +228,9 @@ const DESKTOP_WARM_CACHE_TTL_MS = 5 * 60 * 1000;
 const DESKTOP_IMAGE_PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
 const DESKTOP_IMAGE_PREVIEW_MAX_ITEMS = 48;
 const DESKTOP_IMAGE_PREVIEW_MAX_CONCURRENT = 4;
+const DESKTOP_VIDEO_PREVIEW_MAX_BYTES = 32 * 1024 * 1024;
+const DESKTOP_VIDEO_PREVIEW_MAX_ITEMS = 12;
+const DESKTOP_VIDEO_PREVIEW_MAX_CONCURRENT = 2;
 const BROWSER_APP_WINDOW_TITLEBAR_HEIGHT = 34;
 const BROWSER_TOOLBAR_HEIGHT = 49;
 const CHAT_WINDOW_MIN_SIZE_EXPANDED = { w: 560, h: 420 };
@@ -328,18 +331,21 @@ type DesktopSessionState = {
 type DesktopWarmCache = {
   entries: WorkspaceFileEntry[];
   imagePreviews: Record<string, string>;
+  videoPreviews: Record<string, string>;
   lastLoadedAt: number;
 };
 
 const desktopWarmCache: DesktopWarmCache = {
   entries: [],
   imagePreviews: {},
+  videoPreviews: {},
   lastLoadedAt: 0,
 };
 
 function clearDesktopWarmCache() {
   desktopWarmCache.entries = [];
   desktopWarmCache.imagePreviews = {};
+  desktopWarmCache.videoPreviews = {};
   desktopWarmCache.lastLoadedAt = 0;
 }
 
@@ -350,6 +356,7 @@ function readDesktopWarmCache(): DesktopWarmCache {
   return {
     entries: desktopWarmCache.entries,
     imagePreviews: desktopWarmCache.imagePreviews,
+    videoPreviews: desktopWarmCache.videoPreviews,
     lastLoadedAt: desktopWarmCache.lastLoadedAt,
   };
 }
@@ -374,9 +381,30 @@ function pruneDesktopImagePreviewCache(
   return Object.fromEntries(nextEntries);
 }
 
-function writeDesktopWarmCache(
+function shouldLoadDesktopVideoPreview(entry: WorkspaceFileEntry): boolean {
+  if (!isVideoWorkspaceEntry(entry)) return false;
+  if (entry.size <= 0) return true;
+  return entry.size <= DESKTOP_VIDEO_PREVIEW_MAX_BYTES;
+}
+
+function pruneDesktopVideoPreviewCache(
   entries: WorkspaceFileEntry[],
   previews: Record<string, string>,
+): Record<string, string> {
+  const allowedPaths = new Set(
+    entries
+      .filter(shouldLoadDesktopVideoPreview)
+      .slice(0, DESKTOP_VIDEO_PREVIEW_MAX_ITEMS)
+      .map((entry) => entry.path),
+  );
+  const nextEntries = Object.entries(previews).filter(([path]) => allowedPaths.has(path));
+  return Object.fromEntries(nextEntries);
+}
+
+function writeDesktopWarmCache(
+  entries: WorkspaceFileEntry[],
+  imagePreviews: Record<string, string>,
+  videoPreviews: Record<string, string>,
   lastLoadedAt: number,
 ) {
   if (entries.length === 0 || Date.now() - lastLoadedAt > DESKTOP_WARM_CACHE_TTL_MS) {
@@ -384,7 +412,8 @@ function writeDesktopWarmCache(
     return;
   }
   desktopWarmCache.entries = entries;
-  desktopWarmCache.imagePreviews = pruneDesktopImagePreviewCache(entries, previews);
+  desktopWarmCache.imagePreviews = pruneDesktopImagePreviewCache(entries, imagePreviews);
+  desktopWarmCache.videoPreviews = pruneDesktopVideoPreviewCache(entries, videoPreviews);
   desktopWarmCache.lastLoadedAt = lastLoadedAt;
 }
 
@@ -730,10 +759,21 @@ function imageMimeTypeForName(name: string): string {
   return `image/${ext || "png"}`;
 }
 
+function videoMimeTypeForName(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  return VIDEO_MIME_BY_EXT[ext] || "video/mp4";
+}
+
 function isImageWorkspaceEntry(entry: WorkspaceFileEntry): boolean {
   if (entry.is_directory) return false;
   const ext = entry.name.split(".").pop()?.toLowerCase() || "";
   return IMAGE_EXTS.has(ext);
+}
+
+function isVideoWorkspaceEntry(entry: WorkspaceFileEntry): boolean {
+  if (entry.is_directory) return false;
+  const ext = entry.name.split(".").pop()?.toLowerCase() || "";
+  return VIDEO_EXTS.has(ext);
 }
 
 function normalizeBrowserUrl(raw: string): string {
@@ -962,6 +1002,9 @@ export function Files({
   const [desktopImagePreviews, setDesktopImagePreviews] = useState<Record<string, string>>(
     () => initialDesktopWarmCache.imagePreviews,
   );
+  const [desktopVideoPreviews, setDesktopVideoPreviews] = useState<Record<string, string>>(
+    () => initialDesktopWarmCache.videoPreviews,
+  );
   const [currentPath, setCurrentPath] = useState("");
   const [history, setHistory] = useState<string[]>([""]);
   const [historyIndex, setHistoryIndex] = useState(0);
@@ -996,6 +1039,7 @@ export function Files({
   const filesLoadingSeqRef = useRef(0);
   const desktopEntriesFetchSeqRef = useRef(0);
   const desktopImagePreviewSeqRef = useRef(0);
+  const desktopVideoPreviewSeqRef = useRef(0);
   const desktopActionHandlerRef = useRef<((action: DesktopAction) => Promise<void>) | null>(null);
   const desktopLoadedAtRef = useRef(initialDesktopWarmCache.lastLoadedAt);
 
@@ -2853,7 +2897,7 @@ export function Files({
             : a.name.localeCompare(b.name)
         ));
       const loadedAt = Date.now();
-      writeDesktopWarmCache(filtered, desktopWarmCache.imagePreviews, loadedAt);
+      writeDesktopWarmCache(filtered, desktopWarmCache.imagePreviews, desktopWarmCache.videoPreviews, loadedAt);
       desktopLoadedAtRef.current = loadedAt;
       setDesktopEntries((prev) => (workspaceEntriesEqual(prev, filtered) ? prev : filtered));
     } catch {
@@ -2996,8 +3040,63 @@ export function Files({
   }, [desktopEntries, desktopImagePreviews]);
 
   useEffect(() => {
-    writeDesktopWarmCache(desktopEntries, desktopImagePreviews, desktopLoadedAtRef.current);
-  }, [desktopEntries, desktopImagePreviews]);
+    const requestSeq = desktopVideoPreviewSeqRef.current + 1;
+    desktopVideoPreviewSeqRef.current = requestSeq;
+    const previewableVideoEntries = desktopEntries
+      .filter(shouldLoadDesktopVideoPreview)
+      .slice(0, DESKTOP_VIDEO_PREVIEW_MAX_ITEMS);
+    const videoPaths = new Set(previewableVideoEntries.map((entry) => entry.path));
+    setDesktopVideoPreviews((prev) => {
+      const nextEntries = Object.entries(prev).filter(([path]) => videoPaths.has(path));
+      if (nextEntries.length === Object.keys(prev).length) {
+        return prev;
+      }
+      return Object.fromEntries(nextEntries);
+    });
+    const missingEntries = previewableVideoEntries.filter((entry) => !desktopVideoPreviews[entry.path]);
+    if (missingEntries.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const loadedEntries: Array<readonly [string, string]> = [];
+      for (let index = 0; index < missingEntries.length; index += DESKTOP_VIDEO_PREVIEW_MAX_CONCURRENT) {
+        const batch = missingEntries.slice(index, index + DESKTOP_VIDEO_PREVIEW_MAX_CONCURRENT);
+        const batchResults: Array<[string, string] | null> = await Promise.all(
+          batch.map(async (entry) => {
+            try {
+              const base64 = await invoke<string>("read_workspace_video_thumbnail_base64", { path: entry.path });
+              return [
+                entry.path,
+                `data:image/png;base64,${base64}`,
+              ];
+            } catch {
+              return null;
+            }
+          }),
+        );
+        if (cancelled || requestSeq !== desktopVideoPreviewSeqRef.current) return;
+        loadedEntries.push(
+          ...batchResults.filter((entry): entry is [string, string] => entry !== null),
+        );
+      }
+      if (cancelled || requestSeq !== desktopVideoPreviewSeqRef.current || loadedEntries.length === 0) return;
+      setDesktopVideoPreviews((prev) => {
+        const next = { ...prev };
+        for (const [path, dataUrl] of loadedEntries) {
+          next[path] = dataUrl;
+        }
+        return next;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [desktopEntries, desktopVideoPreviews]);
+
+  useEffect(() => {
+    writeDesktopWarmCache(desktopEntries, desktopImagePreviews, desktopVideoPreviews, desktopLoadedAtRef.current);
+  }, [desktopEntries, desktopImagePreviews, desktopVideoPreviews]);
 
   function openFolder(path: string) { setCurrentPath(path); setHistory([path]); setHistoryIndex(0); setFinderOpen(true); setSelected(null); }
   function navigateTo(path: string) { const h = history.slice(0, historyIndex + 1); h.push(path); setHistory(h); setHistoryIndex(h.length - 1); setCurrentPath(path); setSelected(null); }
@@ -3564,14 +3663,18 @@ export function Files({
         // through the Rust side which already has the auth context.
         // Tradeoff: data URL inflates the payload ~33%, so this works for
         // generated clips (typically a few MB) but not arbitrary uploads.
-        const base64 = await invoke<string>("read_workspace_file_base64", { path: entry.path });
-        const mime = VIDEO_MIME_BY_EXT[ext] || "video/mp4";
+        const [base64, posterBase64] = await Promise.all([
+          invoke<string>("read_workspace_file_base64", { path: entry.path }),
+          invoke<string>("read_workspace_video_thumbnail_base64", { path: entry.path }).catch(() => null),
+        ]);
+        const mime = videoMimeTypeForName(entry.name);
         setPreview({
           kind: "video",
           name: entry.name,
           path: entry.path,
           src: `data:${mime};base64,${base64}`,
           mimeType: mime,
+          poster: posterBase64 ? `data:image/png;base64,${posterBase64}` : undefined,
         });
         focusWindow("preview");
         return;
@@ -4213,11 +4316,13 @@ export function Files({
             entries={desktopEntries}
             desktopIcons={desktopIcons}
             imagePreviews={desktopImagePreviews}
+            videoPreviews={desktopVideoPreviews}
             selected={selected}
             dragDropTarget={dragDropTarget}
             iconClickGuardRef={iconClickGuardRef}
             iconIdForPath={desktopIconIdForPath}
             isImageEntry={isImageWorkspaceEntry}
+            isVideoEntry={isVideoWorkspaceEntry}
             onIconMouseDown={handleIconMouseDown}
             onUploadDragOver={handleUploadDragOver}
             onUploadDragLeave={handleUploadDragLeave}

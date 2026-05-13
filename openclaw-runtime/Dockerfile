@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     pandoc \
+    ffmpeg \
     python3 \
     python3-pip \
     python3-venv \
@@ -111,8 +112,7 @@ RUN EXT_DEPS="$(tr '\n' ' ' </app/all-extension-runtime-deps.txt)" && \
         || echo "WARNING: some extension deps could not be installed even with --force. Affected channels (Matrix, Slack, Lark, Teams, etc.) will be unavailable. Core runtime is unaffected."; \
     else \
       echo "Skipping upstream extension compatibility deps (ENTROPIC_SKIP_EXT_DEPS=1 or list is empty)."; \
-    fi; \
-    exit 0
+    fi
 
 # Install bundled skill dependencies (runs as root before USER node)
 RUN for skill in /app/bundled-skills/*/; do \

@@ -86,7 +86,7 @@ import { appendDiagnosticLog } from "../lib/diagnostics";
 import { entropicSitePath } from "../lib/buildProfile";
 import { Store as TauriStore } from "@tauri-apps/plugin-store";
 import { getLocalCreditBalance } from "../lib/localCredits";
-import { apiRequest, signInWithDiscord, signInWithEmail, signInWithGoogle, signUpWithEmail, createCheckout, getBalance, uploadFileForMedia } from "../lib/auth";
+import { apiRequest, signInWithDiscord, signInWithEmail, signInWithGoogle, signUpWithEmail, createCheckout, getBalance, uploadBase64FileForMedia } from "../lib/auth";
 import entropicLogo from "../assets/entropic-logo.png";
 import type { Page } from "../components/Layout";
 import {
@@ -206,6 +206,68 @@ type ChatImageGenerationResponse = {
     url: string;
   }>;
 };
+
+function VideoAttachmentPreview({
+  attachment,
+  className,
+}: {
+  attachment: MessageAttachment;
+  className?: string;
+}) {
+  const [localPreviewUrl, setLocalPreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    const sourceUrl = attachment.previewUrl?.startsWith("http")
+      ? attachment.previewUrl
+      : attachment.sourceUrl?.startsWith("http")
+        ? attachment.sourceUrl
+        : null;
+    if (!sourceUrl || attachment.previewUrl?.startsWith("blob:")) {
+      return;
+    }
+
+    let cancelled = false;
+    let objectUrl: string | null = null;
+
+    void (async () => {
+      try {
+        const response = await fetch(sourceUrl);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const blob = await response.blob();
+        if (blob.size === 0) {
+          throw new Error("empty video response");
+        }
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setLocalPreviewUrl(objectUrl);
+      } catch (error) {
+        clientLog("video.preview.lazy_hydrate_failed", {
+          url: sourceUrl,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [attachment.previewUrl, attachment.sourceUrl]);
+
+  return (
+    <video
+      src={localPreviewUrl || attachment.previewUrl || attachment.sourceUrl}
+      controls
+      playsInline
+      preload="auto"
+      className={className}
+    />
+  );
+}
 
 const DESKTOP_HANDOFF_STORAGE_KEY = "entropic.desktop.handoff";
 const DESKTOP_HANDOFF_EVENT = "entropic-desktop-handoff";
@@ -794,7 +856,7 @@ async function persistChatData(data: PersistedChatData): Promise<void> {
         // Strip large previewUrl data from attachments to avoid bloating the store
         trimmed.messages[s.key] = msgs.slice(-MAX_PERSISTED_MESSAGES).map((m) =>
           m.attachments
-            ? { ...m, attachments: m.attachments.map(({ fileName, mimeType }) => ({ fileName, mimeType, previewUrl: "" })) }
+            ? { ...m, attachments: m.attachments.map(({ fileName, mimeType, sourceUrl }) => ({ fileName, mimeType, previewUrl: "", sourceUrl })) }
             : m,
         );
       }
@@ -954,6 +1016,7 @@ const MAX_ATTACHMENT_BYTES = 5_000_000;
 // larger ceiling here than for chat-message attachments. Backend cap is 32 MB.
 const MAX_MEDIA_REFERENCE_BYTES = 32_000_000;
 const GENERATED_IMAGES_DEST_PATH = "generated-images";
+const GENERATED_VIDEOS_DEST_PATH = "generated-videos";
 
 const QUICK_ACTION_ICONS: Record<ChatQuickActionIcon, typeof Mail> = {
   mail: Mail,
@@ -1419,6 +1482,8 @@ export function Chat({
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [savingWorkspaceImageKeys, setSavingWorkspaceImageKeys] = useState<Record<string, boolean>>({});
   const [savedWorkspaceImagePaths, setSavedWorkspaceImagePaths] = useState<Record<string, string>>({});
+  const [savingWorkspaceVideoKeys, setSavingWorkspaceVideoKeys] = useState<Record<string, boolean>>({});
+  const [savedWorkspaceVideoPaths, setSavedWorkspaceVideoPaths] = useState<Record<string, string>>({});
   const [toolActivityByRunId, setToolActivityByRunId] = useState<Record<string, ChatToolActivity[]>>({});
   const [activeToolRunId, setActiveToolRunId] = useState<string | null>(null);
   const [loadingWordIndex, setLoadingWordIndex] = useState(0);
@@ -1811,6 +1876,79 @@ export function Chat({
     return "This image was returned as a remote URL and cannot be saved to the workspace yet.";
   }
 
+  function getGeneratedVideoWorkspaceSaveUnsupportedReason(
+    attachment: MessageAttachment,
+  ): string | null {
+    if (!attachment.previewUrl && !attachment.sourceUrl) {
+      return "Video preview is unavailable.";
+    }
+    return null;
+  }
+
+  function blobToBase64Payload(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const value = typeof reader.result === "string" ? reader.result : "";
+        const commaIndex = value.indexOf(",");
+        resolve(commaIndex >= 0 ? value.slice(commaIndex + 1) : value);
+      };
+      reader.onerror = () => reject(reader.error || new Error("Failed to read media file"));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function readAttachmentPreviewAsBase64(attachment: MessageAttachment): Promise<string> {
+    const source = attachment.previewUrl || attachment.sourceUrl;
+    if (!source) {
+      throw new Error("Preview is unavailable.");
+    }
+    const previewBase64 = extractBase64FromDataUrl(source);
+    if (previewBase64) {
+      return previewBase64;
+    }
+    const response = await fetch(source);
+    if (!response.ok) {
+      throw new Error(`Failed to download media (${response.status}).`);
+    }
+    return blobToBase64Payload(await response.blob());
+  }
+
+  async function hydrateRemoteVideoAttachment(
+    url: string,
+    index: number,
+  ): Promise<MessageAttachment> {
+    const fallback: MessageAttachment = {
+      fileName: `video-${index + 1}.mp4`,
+      mimeType: "video/mp4",
+      previewUrl: url,
+      sourceUrl: url,
+    };
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const blob = await response.blob();
+      if (blob.size === 0) {
+        throw new Error("empty video response");
+      }
+      const mimeType = blob.type || response.headers.get("content-type") || fallback.mimeType;
+      return {
+        ...fallback,
+        mimeType,
+        previewUrl: URL.createObjectURL(blob),
+      };
+    } catch (error) {
+      clientLog("video.preview.hydrate_failed", {
+        url,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return fallback;
+    }
+  }
+
   function formatUnknownUiError(error: unknown, fallback: string): string {
     if (error instanceof Error && error.message.trim()) {
       return error.message.trim();
@@ -1863,6 +2001,27 @@ export function Chat({
     const base = safeBase || "generated-image";
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const ext = extensionForImageMimeType(mimeType);
+    return `${base}-${stamp}.${ext}`;
+  }
+
+  function extensionForVideoMimeType(mimeType: string): string {
+    const normalized = mimeType.trim().toLowerCase();
+    if (normalized === "video/webm") return "webm";
+    if (normalized === "video/quicktime") return "mov";
+    return "mp4";
+  }
+
+  function buildWorkspaceVideoFileName(fileName: string, mimeType: string): string {
+    const trimmed = fileName.trim();
+    const safeBase = (trimmed || "generated-video")
+      .replace(/\.[a-z0-9]+$/i, "")
+      .replace(/[^a-z0-9._-]+/gi, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+      .toLowerCase();
+    const base = safeBase || "generated-video";
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const ext = extensionForVideoMimeType(mimeType);
     return `${base}-${stamp}.${ext}`;
   }
 
@@ -5273,8 +5432,12 @@ export function Chat({
       // generation route, then polls until terminal. With image attachments
       // we switch to image-to-video (seedance-2.0-i2v) and pass the uploaded
       // URLs as references. Default: Seedance 2 basic quality, 5s, 16:9.
-      if (!useLocalKeys && !proxyEnabled) {
-        const message = "Video generation requires proxy mode in Settings.";
+      if (!isAuthConfigured || useLocalKeys || !isAuthenticated) {
+        const message = !isAuthConfigured
+          ? "Video generation requires a managed build with hosted media enabled."
+          : useLocalKeys
+            ? "Video generation requires signed-in proxy mode. Turn off Use Local Keys in Settings."
+            : "Sign in to use video generation.";
         setError(message);
         appendAssistantNotice(message, sendSession);
         return;
@@ -5364,13 +5527,11 @@ export function Chat({
             );
             referenceUrls = await Promise.all(
               imageAttachments.map(async (att) => {
-                const binary = atob(att.content);
-                const bytes = new Uint8Array(binary.length);
-                for (let i = 0; i < binary.length; i += 1) {
-                  bytes[i] = binary.charCodeAt(i);
-                }
-                const blob = new Blob([bytes], { type: att.mimeType });
-                const result = await uploadFileForMedia(blob, att.fileName);
+                const result = await uploadBase64FileForMedia(
+                  att.content,
+                  att.fileName,
+                  att.mimeType,
+                );
                 return result.url;
               }),
             );
@@ -5429,6 +5590,7 @@ export function Chat({
 
         const POLL_INTERVAL_MS = 5_000;
         const POLL_TIMEOUT_MS = 10 * 60 * 1000;
+        const startedAt = Date.now();
         const deadline = Date.now() + POLL_TIMEOUT_MS;
         let finalStatus: VideoStatusResponse | null = null;
 
@@ -5437,6 +5599,14 @@ export function Chat({
           const status = await apiRequest<VideoStatusResponse>(
             `/v1/generations/${generationId}`,
           );
+          const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+          setThinkingStatus(`Generating video (${status.status}, ${elapsedSeconds}s elapsed)`);
+          clientLog("video.poll", {
+            generationId,
+            status: status.status,
+            outputs: status.outputs.length,
+            elapsedSeconds,
+          });
           if (status.status === "completed" || status.status === "failed" || status.status === "refunded") {
             finalStatus = status;
             break;
@@ -5457,23 +5627,21 @@ export function Chat({
           throw new Error(`Generation ${finalStatus.status}${reason}: ${detail}`);
         }
 
-        const videoUrl = finalStatus.outputs[0];
         const generatedCount = finalStatus.outputs.length;
+        setThinkingStatus("Preparing video preview");
+        const videoAttachments = await Promise.all(
+          finalStatus.outputs.map((url, index) => hydrateRemoteVideoAttachment(url, index)),
+        );
         appendLocalMessage(
           {
             id: crypto.randomUUID(),
             role: "assistant",
             content: `Generated ${generatedCount} video clip${generatedCount === 1 ? "" : "s"}.`,
             sentAt: Date.now(),
-            attachments: finalStatus.outputs.map((url, index) => ({
-              fileName: `video-${index + 1}.mp4`,
-              mimeType: "video/mp4",
-              previewUrl: url,
-            })),
+            attachments: videoAttachments,
           },
           sendSession,
         );
-        void videoUrl; // referenced via attachments
       } catch (e) {
         const message = formatUnknownUiError(e, "Failed to generate video.");
         setError(message);
@@ -6547,6 +6715,46 @@ export function Chat({
     }
   }
 
+  async function saveGeneratedVideoToWorkspace(
+    message: Message,
+    attachment: MessageAttachment,
+    index: number,
+  ) {
+    if (!attachment.previewUrl && !attachment.sourceUrl) return;
+    const actionKey = imageAttachmentActionKey(message.id, index);
+    const existingPath = savedWorkspaceVideoPaths[actionKey];
+    if (existingPath) {
+      await handoffWorkspacePathToDesktop({
+        path: existingPath,
+        action: "open",
+        looksLikeFile: true,
+      });
+      return;
+    }
+
+    const fileName = buildWorkspaceVideoFileName(attachment.fileName, attachment.mimeType);
+    const workspacePath = `${GENERATED_VIDEOS_DEST_PATH}/${fileName}`;
+    setSavingWorkspaceVideoKeys((prev) => ({ ...prev, [actionKey]: true }));
+    try {
+      const base64 = await readAttachmentPreviewAsBase64(attachment);
+      await invoke("upload_workspace_file", {
+        fileName,
+        base64,
+        destPath: GENERATED_VIDEOS_DEST_PATH,
+      });
+      setSavedWorkspaceVideoPaths((prev) => ({ ...prev, [actionKey]: workspacePath }));
+      setError(null);
+    } catch (e) {
+      setError(formatUnknownUiError(e, "Failed to save video to workspace."));
+    } finally {
+      setSavingWorkspaceVideoKeys((prev) => {
+        const next = { ...prev };
+        delete next[actionKey];
+        return next;
+      });
+    }
+  }
+
   function renderTerminalResult(message: Message) {
     const result = message.terminalResult;
     if (!result) return null;
@@ -6627,7 +6835,9 @@ export function Chat({
   }
 
   function renderMessageAttachments(message: Message) {
-    const attachments = (message.attachments || []).filter((attachment) => attachment.previewUrl);
+    const attachments = (message.attachments || []).filter((attachment) =>
+      attachment.previewUrl || (attachment.mimeType.startsWith("video/") && attachment.sourceUrl),
+    );
     if (attachments.length === 0) {
       return null;
     }
@@ -6635,12 +6845,19 @@ export function Chat({
       <div className="mb-2 grid gap-2">
         {attachments.map((attachment, index) => {
           const actionKey = imageAttachmentActionKey(message.id, index);
-          const savedPath = savedWorkspaceImagePaths[actionKey];
-          const saveUnsupportedReason = getGeneratedImageWorkspaceSaveUnsupportedReason(attachment);
           const isImage = attachment.mimeType.startsWith("image/");
           const isAudio = attachment.mimeType.startsWith("audio/");
           const isVideo = attachment.mimeType.startsWith("video/");
-          const canSaveToWorkspace = isImage && !saveUnsupportedReason;
+          const savedImagePath = savedWorkspaceImagePaths[actionKey];
+          const savedVideoPath = savedWorkspaceVideoPaths[actionKey];
+          const imageSaveUnsupportedReason = isImage
+            ? getGeneratedImageWorkspaceSaveUnsupportedReason(attachment)
+            : null;
+          const videoSaveUnsupportedReason = isVideo
+            ? getGeneratedVideoWorkspaceSaveUnsupportedReason(attachment)
+            : null;
+          const canSaveImageToWorkspace = isImage && !imageSaveUnsupportedReason;
+          const canSaveVideoToWorkspace = isVideo && !videoSaveUnsupportedReason;
           return (
             <div
               key={actionKey}
@@ -6653,11 +6870,8 @@ export function Chat({
                   className="block h-auto max-h-[360px] w-full object-contain"
                 />
               ) : isVideo ? (
-                <video
-                  src={attachment.previewUrl}
-                  controls
-                  playsInline
-                  preload="metadata"
+                <VideoAttachmentPreview
+                  attachment={attachment}
                   className="block h-auto max-h-[360px] w-full bg-black object-contain"
                 />
               ) : isAudio ? (
@@ -6672,20 +6886,20 @@ export function Chat({
               )}
               <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs text-[var(--text-secondary)]">
                 <span className="min-w-0 truncate">{attachment.fileName}</span>
-                {message.role === "assistant" && attachment.mimeType.startsWith("image/") ? (
+                {message.role === "assistant" && isImage ? (
                   <button
                     type="button"
                     onClick={() => {
                       void saveGeneratedImageToWorkspace(message, attachment, index);
                     }}
-                    disabled={Boolean(savingWorkspaceImageKeys[actionKey]) || !canSaveToWorkspace}
+                    disabled={Boolean(savingWorkspaceImageKeys[actionKey]) || !canSaveImageToWorkspace}
                     className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-secondary)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--system-gray-6)] disabled:cursor-not-allowed disabled:opacity-60"
                     title={
-                      savedPath
-                        ? `/data/workspace/${savedPath}`
-                        : canSaveToWorkspace
+                      savedImagePath
+                        ? `/data/workspace/${savedImagePath}`
+                        : canSaveImageToWorkspace
                           ? "Save image to /data/workspace/generated-images"
-                          : saveUnsupportedReason ?? undefined
+                          : imageSaveUnsupportedReason ?? undefined
                     }
                   >
                     {savingWorkspaceImageKeys[actionKey] ? (
@@ -6694,9 +6908,38 @@ export function Chat({
                       <Download className="h-3.5 w-3.5" />
                     )}
                     <span>
-                      {savedPath
+                      {savedImagePath
                         ? "Open in Workspace"
-                        : canSaveToWorkspace
+                        : canSaveImageToWorkspace
+                          ? "Save to Workspace"
+                          : "Save unavailable"}
+                    </span>
+                  </button>
+                ) : message.role === "assistant" && isVideo ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void saveGeneratedVideoToWorkspace(message, attachment, index);
+                    }}
+                    disabled={Boolean(savingWorkspaceVideoKeys[actionKey]) || !canSaveVideoToWorkspace}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-secondary)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--system-gray-6)] disabled:cursor-not-allowed disabled:opacity-60"
+                    title={
+                      savedVideoPath
+                        ? `/data/workspace/${savedVideoPath}`
+                        : canSaveVideoToWorkspace
+                          ? "Save video to /data/workspace/generated-videos"
+                          : videoSaveUnsupportedReason ?? undefined
+                    }
+                  >
+                    {savingWorkspaceVideoKeys[actionKey] ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" />
+                    )}
+                    <span>
+                      {savedVideoPath
+                        ? "Open in Workspace"
+                        : canSaveVideoToWorkspace
                           ? "Save to Workspace"
                           : "Save unavailable"}
                     </span>

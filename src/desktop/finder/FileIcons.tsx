@@ -1,10 +1,13 @@
+import { useState } from "react";
 import {
   File,
   FileCode,
   FileImage,
   FileJson,
   FileText,
+  FileVideo,
   Folder,
+  Play,
   type LucideIcon,
 } from "lucide-react";
 
@@ -14,6 +17,7 @@ export function getFileIcon(name: string, isDir: boolean): LucideIcon {
   if (["png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp"].includes(ext)) {
     return FileImage;
   }
+  if (["mp4", "mov", "webm", "m4v"].includes(ext)) return FileVideo;
   if (
     ["js", "ts", "jsx", "tsx", "py", "rs", "go", "c", "cpp", "h", "rb", "sh", "bash", "zsh", "css", "html", "xml"].includes(ext)
   ) {
@@ -28,6 +32,7 @@ export function getFileColor(name: string, isDir: boolean): string {
   if (isDir) return "#54a3f7";
   const ext = name.split(".").pop()?.toLowerCase() || "";
   if (["png", "jpg", "jpeg", "gif", "svg", "webp"].includes(ext)) return "#e879a8";
+  if (["mp4", "mov", "webm", "m4v"].includes(ext)) return "#60a5fa";
   if (["js", "ts", "jsx", "tsx"].includes(ext)) return "#f0c94d";
   if (ext === "py") return "#5b9bd5";
   if (["json", "yaml", "yml", "toml"].includes(ext)) return "#a78bfa";
@@ -106,6 +111,45 @@ export function DesktopImagePreviewIcon({
             : "0 14px 28px rgba(0,0,0,0.2)",
         }}
       />
+    </div>
+  );
+}
+
+export function DesktopVideoPreviewIcon({
+  src,
+  active = false,
+}: {
+  src: string;
+  active?: boolean;
+}) {
+  const [failed, setFailed] = useState(false);
+  const boxShadow = active
+    ? "0 0 0 1px rgba(122,184,245,0.8), 0 14px 28px rgba(0,0,0,0.24)"
+    : "0 14px 28px rgba(0,0,0,0.2)";
+
+  return (
+    <div
+      className="relative h-14 w-14 overflow-hidden rounded-[16px] bg-neutral-950"
+      style={{ boxShadow }}
+      aria-hidden="true"
+    >
+      {!failed ? (
+        <img
+          src={src}
+          alt=""
+          draggable={false}
+          onError={() => setFailed(true)}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#162033]">
+          <FileVideo className="h-7 w-7 text-[#60a5fa]" strokeWidth={1.8} />
+        </div>
+      )}
+      <div className="absolute inset-0 bg-gradient-to-t from-black/45 via-black/5 to-transparent" />
+      <div className="absolute bottom-1 right-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white ring-1 ring-white/30">
+        <Play className="ml-[1px] h-3 w-3" fill="currentColor" strokeWidth={2.2} />
+      </div>
     </div>
   );
 }

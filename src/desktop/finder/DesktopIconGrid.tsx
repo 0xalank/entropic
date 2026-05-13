@@ -6,6 +6,7 @@ import type {
 import {
   DesktopFileIcon,
   DesktopImagePreviewIcon,
+  DesktopVideoPreviewIcon,
   FolderIcon,
   getFileColor,
   getFileIcon,
@@ -26,11 +27,13 @@ type DesktopIconGridProps = {
   entries: WorkspaceFileEntry[];
   desktopIcons: Record<string, DesktopIcon>;
   imagePreviews: Record<string, string>;
+  videoPreviews: Record<string, string>;
   selected: string | null;
   dragDropTarget: string | null;
   iconClickGuardRef: MutableRefObject<boolean>;
   iconIdForPath: (path: string) => string;
   isImageEntry: (entry: WorkspaceFileEntry) => boolean;
+  isVideoEntry: (entry: WorkspaceFileEntry) => boolean;
   onIconMouseDown: (id: string, event: ReactMouseEvent<HTMLDivElement>) => void;
   onUploadDragOver: (event: ReactDragEvent<HTMLElement>, path: string) => void;
   onUploadDragLeave: (event: ReactDragEvent<HTMLElement>, path?: string) => void;
@@ -48,11 +51,13 @@ export function DesktopIconGrid({
   entries,
   desktopIcons,
   imagePreviews,
+  videoPreviews,
   selected,
   dragDropTarget,
   iconClickGuardRef,
   iconIdForPath,
   isImageEntry,
+  isVideoEntry,
   onIconMouseDown,
   onUploadDragOver,
   onUploadDragLeave,
@@ -116,6 +121,7 @@ export function DesktopIconGrid({
         const Icon = getFileIcon(entry.name, entry.is_directory);
         const iconColor = getFileColor(entry.name, entry.is_directory);
         const imagePreview = isImageEntry(entry) ? imagePreviews[entry.path] : undefined;
+        const videoPreview = isVideoEntry(entry) ? videoPreviews[entry.path] : undefined;
         const isSelected = selected === entry.path;
         const isDropTarget = dragDropTarget === entry.path;
 
@@ -154,6 +160,8 @@ export function DesktopIconGrid({
               <FolderIcon size={56} selected={isSelected || isDropTarget} />
             ) : imagePreview ? (
               <DesktopImagePreviewIcon src={imagePreview} active={isSelected || isDropTarget} />
+            ) : videoPreview ? (
+              <DesktopVideoPreviewIcon src={videoPreview} active={isSelected || isDropTarget} />
             ) : (
               <div className="w-14 h-14 flex items-center justify-center">
                 <DesktopFileIcon icon={Icon} color={iconColor} active={isSelected || isDropTarget} />

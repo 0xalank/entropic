@@ -11,6 +11,7 @@ export type MessageAttachment = {
   fileName: string;
   mimeType: string;
   previewUrl: string;
+  sourceUrl?: string;
 };
 
 export type CalendarEvent = {

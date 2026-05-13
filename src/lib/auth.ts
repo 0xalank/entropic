@@ -4,7 +4,7 @@ import { Store } from "@tauri-apps/plugin-store";
 import { invoke } from "@tauri-apps/api/core";
 import { platform } from "@tauri-apps/plugin-os";
 import { getDeviceFingerprintHash } from "./localCredits";
-import { nativeApiRequest, shouldUseNativeApiTransport } from "./nativeApi";
+import { nativeApiRequest, nativeApiUpload, shouldUseNativeApiTransport } from "./nativeApi";
 import {
   ENTROPIC_BUILD_PROFILE,
   hostedFeaturesEnabled,
@@ -636,15 +636,75 @@ export interface UploadFileResponse {
   size: number;
 }
 
+function blobToBase64Payload(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const value = typeof reader.result === "string" ? reader.result : "";
+      const commaIndex = value.indexOf(",");
+      resolve(commaIndex >= 0 ? value.slice(commaIndex + 1) : value);
+    };
+    reader.onerror = () => reject(reader.error || new Error("Failed to read file"));
+    reader.readAsDataURL(blob);
+  });
+}
+
 export async function uploadFileForMedia(
   blob: Blob,
   fileName: string,
+): Promise<UploadFileResponse> {
+  const base64 = await blobToBase64Payload(blob);
+  return uploadBase64FileForMedia(
+    base64,
+    fileName,
+    blob.type || "application/octet-stream",
+  );
+}
+
+export async function uploadBase64FileForMedia(
+  base64: string,
+  fileName: string,
+  contentType: string,
 ): Promise<UploadFileResponse> {
   const token = await getAccessToken();
   if (!token) {
     throw new ApiRequestError("Not authenticated", { status: 401, kind: "http" });
   }
 
+  let deviceFingerprint: string | undefined;
+  try {
+    deviceFingerprint = await getDeviceFingerprintHash();
+  } catch (error: any) {
+    authDebug("uploadFileForMedia fingerprint unavailable", {
+      message: error?.message || String(error),
+    });
+  }
+
+  if (USE_NATIVE_API_TRANSPORT) {
+    try {
+      const nativeResponse = await nativeApiUpload({
+        url: `${API_URL}/v1/uploads`,
+        accessToken: token,
+        fileName,
+        contentType,
+        base64,
+        deviceFingerprint,
+      });
+      if (nativeResponse.status < 200 || nativeResponse.status >= 300) {
+        throw new ApiRequestError(
+          extractApiErrorMessage(nativeResponse.body, `Upload failed (${nativeResponse.status})`),
+          { status: nativeResponse.status, data: nativeResponse.body, kind: "http" },
+        );
+      }
+      return nativeResponse.body as UploadFileResponse;
+    } catch (error: any) {
+      if (error instanceof ApiRequestError) throw error;
+      throw new ApiRequestError("Upload network error", { kind: "network", data: error });
+    }
+  }
+
+  const dataUrl = `data:${contentType || "application/octet-stream"};base64,${base64}`;
+  const blob = await fetch(dataUrl).then((response) => response.blob());
   const form = new FormData();
   form.append("file", blob, fileName);
 
@@ -652,7 +712,10 @@ export async function uploadFileForMedia(
   try {
     response = await fetch(`${API_URL}/v1/uploads`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(deviceFingerprint ? { "X-Entropic-Device-Fingerprint": deviceFingerprint } : {}),
+      },
       body: form,
     });
   } catch (error: any) {

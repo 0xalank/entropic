@@ -355,6 +355,17 @@ pub struct NativeApiRequest {
     device_fingerprint: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeApiUploadRequest {
+    url: String,
+    access_token: String,
+    file_name: String,
+    content_type: String,
+    base64: String,
+    device_fingerprint: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeApiResponse {
@@ -1987,6 +1998,51 @@ pub async fn entropic_api_request_native(
         .text()
         .await
         .map_err(|e| format!("Failed reading API response body: {}", e))?;
+    let body = if text.trim().is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_str::<serde_json::Value>(&text)
+            .unwrap_or_else(|_| serde_json::json!({ "raw": text }))
+    };
+
+    Ok(NativeApiResponse { status, body })
+}
+
+#[tauri::command]
+pub async fn entropic_api_upload_native(
+    request: NativeApiUploadRequest,
+) -> Result<NativeApiResponse, String> {
+    let url = validate_native_api_url(&request.url)?;
+    let bytes = decode_base64_payload(&request.base64)?;
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|e| format!("Failed to build API upload client: {}", e))?;
+
+    let mut part = reqwest::multipart::Part::bytes(bytes).file_name(request.file_name.clone());
+    if !request.content_type.trim().is_empty() {
+        part = part
+            .mime_str(request.content_type.trim())
+            .map_err(|e| format!("Invalid upload content type: {}", e))?;
+    }
+    let form = reqwest::multipart::Form::new().part("file", part);
+
+    let mut req = client.post(url).bearer_auth(request.access_token);
+    if let Some(device_fingerprint) = request.device_fingerprint.as_deref() {
+        if !device_fingerprint.trim().is_empty() {
+            req = req.header("X-Entropic-Device-Fingerprint", device_fingerprint);
+        }
+    }
+
+    let response = req
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("Upload network request failed: {}", e))?;
+    let status = response.status().as_u16();
+    let text = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed reading upload response body: {}", e))?;
     let body = if text.trim().is_empty() {
         serde_json::Value::Null
     } else {
@@ -17511,6 +17567,72 @@ pub async fn read_workspace_file_base64(path: String) -> Result<String, String> 
     let raw = docker_exec_output(&["exec", container, "base64", "--", &resolved_path])
         .map_err(|_| "File not found or unreadable".to_string())?;
     Ok(raw.chars().filter(|c| *c != '\n' && *c != '\r').collect())
+}
+
+#[tauri::command]
+pub async fn read_workspace_video_thumbnail_base64(path: String) -> Result<String, String> {
+    let container = running_gateway_container_name()
+        .ok_or_else(|| "OpenClaw runtime is not running. Start the sandbox first.".to_string())?;
+    let sanitized = sanitize_workspace_path(&path)?;
+    if sanitized.is_empty() {
+        return Err("Invalid path".to_string());
+    }
+    let full_path = format!("{}/{}", WORKSPACE_ROOT, sanitized);
+    let resolved_path =
+        resolve_workspace_regular_file_path(container, &full_path, "File not found or unreadable")?;
+    let script = r#"set -eu
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  printf 'ffmpeg is not installed in the OpenClaw runtime image.' >&2
+  exit 127
+fi
+tmp="$(mktemp -t entropic-video-thumb.XXXXXX.png)"
+cleanup() {
+  rm -f -- "$tmp"
+}
+trap cleanup EXIT INT TERM
+input="$1"
+if ! timeout 10s ffmpeg -hide_banner -nostdin -loglevel error -ss 0.5 -i "$input" \
+  -frames:v 1 -vf "scale=320:-2" -y "$tmp" >/dev/null 2>&1; then
+  timeout 10s ffmpeg -hide_banner -nostdin -loglevel error -i "$input" \
+    -frames:v 1 -vf "scale=320:-2" -y "$tmp" >/dev/null 2>&1 || {
+      printf 'Failed to generate video thumbnail.' >&2
+      exit 1
+    }
+fi
+[ -s "$tmp" ] || {
+  printf 'Generated video thumbnail was empty.' >&2
+  exit 1
+}
+base64 "$tmp" | tr -d '\n'
+"#;
+    let args = [
+        "exec",
+        container,
+        "sh",
+        "-lc",
+        script,
+        "sh",
+        resolved_path.as_str(),
+    ];
+    let raw = match docker_exec_output(&args) {
+        Ok(raw) => raw,
+        Err(e) => {
+            let trimmed = e.trim();
+            return Err(if trimmed.is_empty() {
+                "Failed to generate video thumbnail.".to_string()
+            } else {
+                trimmed.to_string()
+            });
+        }
+    };
+    let thumbnail = raw
+        .chars()
+        .filter(|c| *c != '\n' && *c != '\r')
+        .collect::<String>();
+    if thumbnail.is_empty() {
+        return Err("Failed to generate video thumbnail.".to_string());
+    }
+    Ok(thumbnail)
 }
 
 #[tauri::command]

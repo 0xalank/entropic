@@ -10,7 +10,7 @@ import { getFileColor, getFileIcon } from "./FileIcons";
 export type FilePreviewState =
   | { kind: "text"; name: string; path: string; content: string }
   | { kind: "image"; name: string; path: string; dataUrl: string }
-  | { kind: "video"; name: string; path: string; src: string; mimeType?: string }
+  | { kind: "video"; name: string; path: string; src: string; mimeType?: string; poster?: string }
   | { kind: "binary"; name: string; path: string; size: number };
 
 type FilePreviewWindowProps = {
@@ -188,6 +188,7 @@ export function FilePreviewWindow({
           <div className="flex items-center justify-center p-4">
             <video
               src={preview.src}
+              poster={preview.poster}
               controls
               playsInline
               preload="metadata"
