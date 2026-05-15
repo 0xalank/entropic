@@ -1,4 +1,7 @@
+#![allow(unexpected_cfgs)]
+
 mod commands;
+mod companion;
 mod runtime;
 mod windows_runtime_manager;
 
@@ -129,6 +132,9 @@ fn install_linux_webview_media_permissions(app: &tauri::App) {
 }
 
 pub fn maybe_handle_cli_mode() -> Option<i32> {
+    if let Some(exit_code) = companion::maybe_handle_cli_mode() {
+        return Some(exit_code);
+    }
     windows_runtime_manager::maybe_handle_runtime_manager_cli()
 }
 
@@ -198,6 +204,11 @@ pub fn run() {
 
             let state = commands::init_state(app.handle());
             app.manage(state);
+            if let Err(err) = companion::init(app.handle()) {
+                let msg = format!("companion init failed: {}", err);
+                append_startup_log(&msg);
+                eprintln!("[Entropic] {}", msg);
+            }
 
             #[cfg(target_os = "linux")]
             install_linux_webview_media_permissions(app);
@@ -315,6 +326,13 @@ pub fn run() {
             commands::embedded_preview_back,
             commands::embedded_preview_forward,
             commands::request_desktop_action,
+            companion::get_companion_state,
+            companion::set_companion_skill_grant,
+            companion::companion_run_tool,
+            companion::show_main_window,
+            companion::show_companion_window,
+            companion::hide_companion_window,
+            companion::toggle_companion_window,
             commands::approve_gateway_device_pairing,
             commands::get_onlyoffice_status,
             commands::ensure_onlyoffice_ready,
@@ -360,7 +378,13 @@ pub fn run() {
                 // off a hidden single-instance process.
                 #[cfg(target_os = "macos")]
                 {
-                    if cfg!(debug_assertions) {
+                    if label == "companion" {
+                        println!("[Entropic] Companion close requested — hiding window");
+                        if let Some(window) = app_handle.get_webview_window(&label) {
+                            let _ = window.hide();
+                        }
+                        api.prevent_close();
+                    } else if cfg!(debug_assertions) {
                         println!(
                             "[Entropic] Window close requested in debug — exiting app for clean relaunches"
                         );

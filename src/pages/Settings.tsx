@@ -59,6 +59,19 @@ import {
 } from "../desktop/voice/voicePreferences";
 import { AgentAvatar } from "../components/AgentAvatar";
 import { DEFAULT_SOUL, normalizeDefaultSoul } from "../lib/agentDefaults";
+import {
+  getCompanionState,
+  setCompanionSkillGrant,
+  type CompanionState,
+} from "../lib/companion";
+
+type AppleAutomationStatus = {
+  supported: boolean;
+  osascript_available: boolean;
+  shortcuts_available: boolean;
+  accessibility_trusted: boolean;
+};
+
 type Props = {
   gatewayRunning: boolean;
   onGatewayToggle: () => void;
@@ -1273,6 +1286,10 @@ export function Settings({
   const [activeSection, setActiveSection] = useState<SettingsSection>("profile");
   const contentRef = useRef<HTMLDivElement>(null);
   const profileNameInputRef = useRef<HTMLInputElement>(null);
+  const [companionState, setCompanionState] = useState<CompanionState | null>(null);
+  const [appleAutomationStatus, setAppleAutomationStatus] =
+    useState<AppleAutomationStatus | null>(null);
+  const [companionUpdatingSkill, setCompanionUpdatingSkill] = useState<string | null>(null);
   const [gatewayDiagLogs, setGatewayDiagLogs] = useState<DiagnosticLogEntry[]>([]);
   const [diagTypeFilters, setDiagTypeFilters] = useState<Record<DiagnosticLogType, boolean>>({
     info: true,
@@ -1283,6 +1300,32 @@ export function Settings({
   useEffect(() => {
     contentRef.current?.scrollTo({ top: 0 });
   }, [activeSection]);
+
+  useEffect(() => {
+    if (activeSection !== "system") return;
+    let cancelled = false;
+    Promise.all([
+      getCompanionState().catch(() => null),
+      invoke<AppleAutomationStatus>("get_apple_automation_status").catch(() => null),
+    ]).then(([companion, automation]) => {
+      if (cancelled) return;
+      setCompanionState(companion);
+      setAppleAutomationStatus(automation);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSection]);
+
+  async function handleCompanionGrantChange(skillId: string, granted: boolean) {
+    setCompanionUpdatingSkill(skillId);
+    try {
+      const next = await setCompanionSkillGrant(skillId, granted);
+      setCompanionState(next);
+    } finally {
+      setCompanionUpdatingSkill(null);
+    }
+  }
 
   useEffect(() => {
     function openProfileSection() {
@@ -2043,6 +2086,94 @@ export function Settings({
             )}
             <span>{gatewayRunning ? "Restart" : "Start"}</span>
           </button>
+        </SettingsRow>
+
+        <SettingsRow
+          label="Companion Automation"
+          icon={Shield}
+          description="Native app control readiness for Companion skills."
+          wideControl
+        >
+          <div className="flex w-full min-w-[280px] flex-wrap gap-2 text-[11px]">
+            <span
+              className={clsx(
+                "rounded-md border px-2 py-1",
+                appleAutomationStatus?.supported
+                  ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-600"
+                  : "border-[var(--border-subtle)] bg-[var(--bg-secondary)] text-[var(--text-tertiary)]",
+              )}
+            >
+              macOS {appleAutomationStatus?.supported ? "Supported" : "Unavailable"}
+            </span>
+            <span
+              className={clsx(
+                "rounded-md border px-2 py-1",
+                appleAutomationStatus?.osascript_available
+                  ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-600"
+                  : "border-amber-500/20 bg-amber-500/10 text-amber-600",
+              )}
+            >
+              OSA {appleAutomationStatus?.osascript_available ? "Ready" : "Missing"}
+            </span>
+            <span
+              className={clsx(
+                "rounded-md border px-2 py-1",
+                appleAutomationStatus?.accessibility_trusted
+                  ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-600"
+                  : "border-amber-500/20 bg-amber-500/10 text-amber-600",
+              )}
+            >
+              Accessibility {appleAutomationStatus?.accessibility_trusted ? "Granted" : "Not Granted"}
+            </span>
+          </div>
+        </SettingsRow>
+
+        <SettingsRow
+          label="Companion Skills"
+          icon={Sparkles}
+          description="Enable or revoke per-app Companion grants."
+          wideControl
+        >
+          <div className="flex max-h-64 w-full min-w-[280px] flex-col gap-2 overflow-auto pr-1">
+            {(companionState?.skills || []).length === 0 ? (
+              <div className="text-[12px] text-[var(--text-secondary)]">No Companion skills loaded.</div>
+            ) : (
+              companionState!.skills.map((skill) => (
+                <div
+                  key={skill.id}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-secondary)] px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-[12px] font-semibold text-[var(--text-primary)]">
+                      {skill.name}
+                    </div>
+                    <div className="truncate text-[11px] text-[var(--text-tertiary)]">
+                      {skill.unitOfWork.join(" · ") || skill.contextMode}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={companionUpdatingSkill === skill.id}
+                    onClick={() => {
+                      void handleCompanionGrantChange(skill.id, !skill.granted);
+                    }}
+                    className={clsx(
+                      "h-8 shrink-0 rounded-md px-3 text-[11px] font-semibold transition-colors disabled:opacity-50",
+                      skill.granted
+                        ? "border border-[var(--border-subtle)] bg-[var(--bg-card)] text-[var(--text-secondary)] hover:bg-[var(--system-gray-6)]"
+                        : "bg-[#1A1A2E] text-white hover:opacity-90",
+                    )}
+                  >
+                    {companionUpdatingSkill === skill.id
+                      ? "Saving"
+                      : skill.granted
+                        ? "Revoke"
+                        : "Enable"}
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
         </SettingsRow>
 
         {isMacOS && (

@@ -1,0 +1,339 @@
+{
+  "version": 1,
+  "skills": [
+    {
+      "id": "powerpoint",
+      "name": "PowerPoint",
+      "bundleIds": ["com.microsoft.Powerpoint"],
+      "activation": "focus",
+      "transport": { "kind": "mcp_stdio", "command": "entropic-companion-mcp", "args": ["powerpoint"] },
+      "contextMode": "on_demand",
+      "unitOfWork": ["slide", "section", "speaker_notes"],
+      "permissions": [
+        {
+          "id": "apple_automation",
+          "label": "PowerPoint Automation",
+          "description": "Read and edit the active presentation through PowerPoint's automation model."
+        }
+      ],
+      "tools": [
+        {
+          "id": "get_focus_context",
+          "name": "Get Focus Context",
+          "description": "Return the active app, window title, and attached skill."
+        },
+        {
+          "id": "get_selection",
+          "name": "Get Slide Selection",
+          "description": "Inspect the current PowerPoint selection at slide and shape grain."
+        }
+      ],
+      "systemPromptFragment": "When PowerPoint is active, plan and execute in slide, section, and speaker-note sized units. Keep edits reviewable in PowerPoint."
+    },
+    {
+      "id": "excel",
+      "name": "Excel",
+      "bundleIds": ["com.microsoft.Excel"],
+      "activation": "focus",
+      "transport": { "kind": "mcp_stdio", "command": "entropic-companion-mcp", "args": ["excel"] },
+      "contextMode": "on_demand",
+      "unitOfWork": ["cell", "range", "sheet", "named_formula"],
+      "permissions": [
+        {
+          "id": "apple_automation",
+          "label": "Excel Automation",
+          "description": "Read and edit workbooks through Excel's automation model."
+        }
+      ],
+      "tools": [
+        {
+          "id": "get_focus_context",
+          "name": "Get Focus Context",
+          "description": "Return the active app, window title, and attached skill."
+        },
+        {
+          "id": "get_selection",
+          "name": "Get Range Selection",
+          "description": "Inspect the current Excel selection at cell, range, and sheet grain."
+        }
+      ],
+      "systemPromptFragment": "When Excel is active, plan and execute in cell, range, sheet, and named-formula sized units. Preserve formulas as formulas."
+    },
+    {
+      "id": "word",
+      "name": "Word",
+      "bundleIds": ["com.microsoft.Word"],
+      "activation": "focus",
+      "transport": { "kind": "mcp_stdio", "command": "entropic-companion-mcp", "args": ["word"] },
+      "contextMode": "on_demand",
+      "unitOfWork": ["paragraph", "section", "comment", "revision"],
+      "permissions": [
+        {
+          "id": "apple_automation",
+          "label": "Word Automation",
+          "description": "Read and edit the active document through Word's automation model."
+        }
+      ],
+      "tools": [
+        {
+          "id": "get_focus_context",
+          "name": "Get Focus Context",
+          "description": "Return the active app, window title, and attached skill."
+        },
+        {
+          "id": "get_selection",
+          "name": "Get Text Selection",
+          "description": "Inspect the current Word selection at paragraph and text-range grain."
+        }
+      ],
+      "systemPromptFragment": "When Word is active, plan and execute in paragraph, section, comment, and revision sized units."
+    },
+    {
+      "id": "outlook",
+      "name": "Outlook",
+      "bundleIds": ["com.microsoft.Outlook"],
+      "activation": "background",
+      "transport": { "kind": "mcp_stdio", "command": "entropic-companion-mcp", "args": ["outlook"] },
+      "contextMode": "on_demand",
+      "unitOfWork": ["thread", "draft", "recipient", "attachment"],
+      "permissions": [
+        {
+          "id": "apple_automation",
+          "label": "Outlook Automation",
+          "description": "Read selected mail context and create drafts through Outlook's automation model."
+        }
+      ],
+      "tools": [
+        {
+          "id": "get_focus_context",
+          "name": "Get Focus Context",
+          "description": "Return the active app, window title, and attached skill."
+        },
+        {
+          "id": "get_selection",
+          "name": "Get Mail Selection",
+          "description": "Inspect the currently selected Outlook message or draft."
+        }
+      ],
+      "systemPromptFragment": "When Outlook is active or used as a background handoff, work in thread, draft, recipient, and attachment sized units."
+    },
+    {
+      "id": "keynote",
+      "name": "Keynote",
+      "bundleIds": ["com.apple.iWork.Keynote"],
+      "activation": "focus",
+      "transport": { "kind": "mcp_stdio", "command": "entropic-companion-mcp", "args": ["keynote"] },
+      "contextMode": "on_demand",
+      "unitOfWork": ["slide", "section", "speaker_notes"],
+      "permissions": [
+        {
+          "id": "apple_automation",
+          "label": "Keynote Automation",
+          "description": "Read and edit the active deck through Keynote's automation model."
+        }
+      ],
+      "tools": [
+        {
+          "id": "get_focus_context",
+          "name": "Get Focus Context",
+          "description": "Return the active app, window title, and attached skill."
+        },
+        {
+          "id": "get_selection",
+          "name": "Get Slide Selection",
+          "description": "Inspect the current Keynote slide and selected objects."
+        }
+      ],
+      "systemPromptFragment": "When Keynote is active, plan and execute in slide, section, and speaker-note sized units."
+    },
+    {
+      "id": "numbers",
+      "name": "Numbers",
+      "bundleIds": ["com.apple.iWork.Numbers"],
+      "activation": "focus",
+      "transport": { "kind": "mcp_stdio", "command": "entropic-companion-mcp", "args": ["numbers"] },
+      "contextMode": "on_demand",
+      "unitOfWork": ["cell", "range", "sheet", "table"],
+      "permissions": [
+        {
+          "id": "apple_automation",
+          "label": "Numbers Automation",
+          "description": "Read and edit spreadsheets through Numbers' automation model."
+        }
+      ],
+      "tools": [
+        {
+          "id": "get_focus_context",
+          "name": "Get Focus Context",
+          "description": "Return the active app, window title, and attached skill."
+        },
+        {
+          "id": "get_selection",
+          "name": "Get Table Selection",
+          "description": "Inspect the current Numbers table, sheet, and selection."
+        }
+      ],
+      "systemPromptFragment": "When Numbers is active, plan and execute in cell, range, table, and sheet sized units."
+    },
+    {
+      "id": "pages",
+      "name": "Pages",
+      "bundleIds": ["com.apple.iWork.Pages"],
+      "activation": "focus",
+      "transport": { "kind": "mcp_stdio", "command": "entropic-companion-mcp", "args": ["pages"] },
+      "contextMode": "on_demand",
+      "unitOfWork": ["paragraph", "section", "comment", "revision"],
+      "permissions": [
+        {
+          "id": "apple_automation",
+          "label": "Pages Automation",
+          "description": "Read and edit documents through Pages' automation model."
+        }
+      ],
+      "tools": [
+        {
+          "id": "get_focus_context",
+          "name": "Get Focus Context",
+          "description": "Return the active app, window title, and attached skill."
+        },
+        {
+          "id": "get_selection",
+          "name": "Get Text Selection",
+          "description": "Inspect the current Pages selection."
+        }
+      ],
+      "systemPromptFragment": "When Pages is active, plan and execute in paragraph and section sized units."
+    },
+    {
+      "id": "mail",
+      "name": "Mail",
+      "bundleIds": ["com.apple.mail"],
+      "activation": "background",
+      "transport": { "kind": "mcp_stdio", "command": "entropic-companion-mcp", "args": ["mail"] },
+      "contextMode": "on_demand",
+      "unitOfWork": ["thread", "draft", "recipient", "attachment"],
+      "permissions": [
+        {
+          "id": "apple_automation",
+          "label": "Mail Automation",
+          "description": "Read selected message context and create drafts through Mail's automation model."
+        }
+      ],
+      "tools": [
+        {
+          "id": "get_focus_context",
+          "name": "Get Focus Context",
+          "description": "Return the active app, window title, and attached skill."
+        },
+        {
+          "id": "get_selection",
+          "name": "Get Mail Selection",
+          "description": "Inspect the currently selected Mail message or thread."
+        }
+      ],
+      "systemPromptFragment": "When Mail is active or used as a background handoff, work in thread, draft, recipient, and attachment sized units."
+    },
+    {
+      "id": "calendar",
+      "name": "Calendar",
+      "bundleIds": ["com.apple.iCal"],
+      "activation": "background",
+      "transport": { "kind": "mcp_stdio", "command": "entropic-companion-mcp", "args": ["calendar"] },
+      "contextMode": "on_demand",
+      "unitOfWork": ["event", "attendee", "time_block"],
+      "permissions": [
+        {
+          "id": "apple_automation",
+          "label": "Calendar Automation",
+          "description": "Read and create events through Calendar's automation model."
+        }
+      ],
+      "tools": [
+        {
+          "id": "get_focus_context",
+          "name": "Get Focus Context",
+          "description": "Return the active app, window title, and attached skill."
+        },
+        {
+          "id": "get_selection",
+          "name": "Get Event Selection",
+          "description": "Inspect the active or selected Calendar event."
+        }
+      ],
+      "systemPromptFragment": "When Calendar is active or used as a background handoff, work in event, attendee, and time-block sized units."
+    },
+    {
+      "id": "notes",
+      "name": "Notes",
+      "bundleIds": ["com.apple.Notes"],
+      "activation": "focus",
+      "transport": { "kind": "mcp_stdio", "command": "entropic-companion-mcp", "args": ["notes"] },
+      "contextMode": "on_demand",
+      "unitOfWork": ["note", "paragraph", "attachment"],
+      "permissions": [
+        {
+          "id": "apple_automation",
+          "label": "Notes Automation",
+          "description": "Read and edit notes through Notes' automation model."
+        }
+      ],
+      "tools": [
+        {
+          "id": "get_focus_context",
+          "name": "Get Focus Context",
+          "description": "Return the active app, window title, and attached skill."
+        },
+        {
+          "id": "get_selection",
+          "name": "Get Note Selection",
+          "description": "Inspect the current Notes selection."
+        }
+      ],
+      "systemPromptFragment": "When Notes is active, plan and execute in note, paragraph, and attachment sized units."
+    },
+    {
+      "id": "figma",
+      "name": "Figma",
+      "bundleIds": ["com.figma.Desktop"],
+      "activation": "focus",
+      "transport": { "kind": "figma_plugin_ws", "port": 19796 },
+      "contextMode": "push",
+      "unitOfWork": ["frame", "component", "variant", "auto_layout_node"],
+      "permissions": [
+        {
+          "id": "figma_plugin_bridge",
+          "label": "Figma Plugin Bridge",
+          "description": "Connect to the Entropic Figma plugin over a local WebSocket for scene-graph access."
+        }
+      ],
+      "tools": [
+        {
+          "id": "get_focus_context",
+          "name": "Get Focus Context",
+          "description": "Return the active app, window title, and attached skill."
+        },
+        {
+          "id": "get_selection",
+          "name": "Get Figma Selection",
+          "description": "Read the selected Figma frame, component, variant, or auto-layout node from the plugin bridge."
+        },
+        {
+          "id": "create_frame",
+          "name": "Create Frame",
+          "description": "Create a frame through the connected Figma plugin bridge.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "description": "Frame name." },
+              "x": { "type": "number", "description": "Frame x position in page coordinates." },
+              "y": { "type": "number", "description": "Frame y position in page coordinates." },
+              "width": { "type": "number", "description": "Frame width in pixels." },
+              "height": { "type": "number", "description": "Frame height in pixels." }
+            }
+          }
+        }
+      ],
+      "systemPromptFragment": "When Figma is active, plan and execute in frame, component, variant, and auto-layout-node sized units. Use plugin scene-graph tools instead of pixel inspection."
+    }
+  ]
+}

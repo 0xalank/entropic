@@ -20,6 +20,8 @@ src-tauri/resources/share/*
 !src-tauri/resources/share/placeholders/
 src-tauri/resources/share/placeholders/*
 !src-tauri/resources/share/placeholders/README.txt
+!src-tauri/resources/share/companion/
+!src-tauri/resources/share/companion/**
 
 # Environment
 .env

@@ -7,6 +7,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { Onboarding } from "./pages/Onboarding";
 import { SignIn } from "./pages/SignIn";
 import { DevScreenPreview } from "./components/DevScreenPreview";
+import { CompanionWindowApp } from "./components/CompanionWindowApp";
 import {
   isOnboardingComplete,
   saveOnboardingData,
@@ -270,9 +271,9 @@ function AppContent() {
 }
 
 function App() {
-  const devScreen = import.meta.env.DEV
-    ? new URLSearchParams(window.location.search).get("devScreen")
-    : null;
+  const searchParams = new URLSearchParams(window.location.search);
+  const devScreen = import.meta.env.DEV ? searchParams.get("devScreen") : null;
+  const companionWindow = searchParams.get("companion") === "1";
   const tauriRuntime = isTauriRuntime();
 
   useEffect(() => {
@@ -311,6 +312,14 @@ function App() {
           </p>
         </main>
       </div>
+    );
+  }
+
+  if (companionWindow) {
+    return (
+      <AuthProvider>
+        <CompanionWindowApp />
+      </AuthProvider>
     );
   }
 

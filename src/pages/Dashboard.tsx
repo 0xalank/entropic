@@ -2,13 +2,14 @@ import { lazy, Suspense, useEffect, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-shell";
-import { Cpu, Image, Loader2, Shield, User } from "lucide-react";
+import { Cpu, Image, Loader2, Shield, Sparkles, User } from "lucide-react";
 import { Layout, Page } from "../components/Layout";
 import {
   SandboxStartupOverlay,
   type GatewayStartupStage,
 } from "../components/SandboxStartupOverlay";
 import { Chat, type ChatSession, type ChatSessionActionRequest } from "./Chat";
+import { CompanionPanel } from "../components/CompanionPanel";
 import { Store } from "./Store";
 import { Channels } from "./Channels";
 import { Files } from "./Files";
@@ -116,6 +117,23 @@ function prefetchSettingsPage() {
 }
 
 const Settings = lazy(() => loadSettingsPage().then((m) => ({ default: m.Settings })));
+
+const COMPANION_NAV_PAGES = new Set<Page>([
+  "chat",
+  "store",
+  "integrations",
+  "skills",
+  "channels",
+  "files",
+  "tasks",
+  "jobs",
+  "settings",
+  "billing",
+]);
+
+function isCompanionNavPage(value: unknown): value is Page {
+  return typeof value === "string" && COMPANION_NAV_PAGES.has(value as Page);
+}
 
 const initialDashboardBootstrapState: DashboardBootstrapState = {
   status: "loading",
@@ -686,6 +704,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
   const [currentChatSession, setCurrentChatSession] = useState<string | null>(null);
   const [pendingChatSession, setPendingChatSession] = useState<string | null>(null);
   const [pendingChatAction, setPendingChatAction] = useState<ChatSessionActionRequest | null>(null);
+  const [companionOpen, setCompanionOpen] = useState(false);
   const [pendingDesktopAction, setPendingDesktopAction] =
     useState<PendingDesktopAction | null>(null);
   const [localCreditBalanceCents, setLocalCreditBalanceCents] = useState<number | null>(null);
@@ -838,6 +857,16 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
     } catch (error) {
       console.warn("[Entropic] Failed to load local credits:", error);
       setLocalCreditBalanceCents(0);
+    }
+  }
+
+  async function toggleCompanionSurface() {
+    try {
+      await invoke("toggle_companion_window");
+      setCompanionOpen(false);
+    } catch (error) {
+      console.warn("[Entropic] Failed to toggle native Companion window:", error);
+      setCompanionOpen((current) => !current);
     }
   }
 
@@ -1080,6 +1109,51 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       window.removeEventListener("entropic-start-gateway", handleStartGateway);
     };
   }, [gatewayRunning, isTogglingGateway]);
+
+  useEffect(() => {
+    let disposed = false;
+    const disposers: Array<() => void> = [];
+    Promise.all([
+      listen("companion-start-gateway-requested", () => {
+        void invoke("show_main_window").catch(() => undefined);
+        if (!gatewayRunning && !isTogglingGateway) {
+          void toggleGateway();
+        }
+      }),
+      listen<unknown>("companion-open-page-requested", (event) => {
+        void invoke("show_main_window").catch(() => undefined);
+        if (isCompanionNavPage(event.payload)) {
+          setCurrentPage(event.payload);
+        }
+      }),
+    ]).then((unlisten) => {
+      if (disposed) {
+        unlisten.forEach((dispose) => dispose());
+        return;
+      }
+      disposers.push(...unlisten);
+    });
+    return () => {
+      disposed = true;
+      disposers.forEach((dispose) => dispose());
+    };
+  }, [gatewayRunning, isTogglingGateway]);
+
+  useEffect(() => {
+    const handleCompanionShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.key.toLowerCase() !== "e") {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) {
+        return;
+      }
+      event.preventDefault();
+      void toggleCompanionSurface();
+    };
+    window.addEventListener("keydown", handleCompanionShortcut);
+    return () => window.removeEventListener("keydown", handleCompanionShortcut);
+  }, []);
 
   useEffect(() => {
     if (!gatewayRunning) {
@@ -2441,7 +2515,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
     }
   }, [currentPage]);
 
-  function renderChatPage() {
+  function getChatGatewayUiState() {
     const gatewayBootstrapPending =
       !prefsLoaded ||
       (!gatewayRunning &&
@@ -2468,6 +2542,30 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       gatewayHealthStatus: bootstrapState.gatewayHealthStatus,
       gatewayContainerRunning: bootstrapState.gatewayContainerRunning,
     });
+    return { gatewayStarting, gatewayLifecycleText };
+  }
+
+  function handleChatSessionsChange(sessions: ChatSession[], currentKey: string | null) {
+    setChatSessions((prev) => {
+      // Guard against transient empty snapshots while chat state is still rehydrating.
+      if (sessions.length === 0 && prev.length > 0 && currentPage !== "chat") {
+        return prev;
+      }
+      return sessions;
+    });
+    setCurrentChatSession((prev) => currentKey ?? prev);
+    setPendingChatSession((pending) => {
+      if (!pending) return pending;
+      if (pending === "__new__") {
+        return currentKey ? null : pending;
+      }
+      return pending === currentKey ? null : pending;
+    });
+    setPendingChatAction(null);
+  }
+
+  function renderChatPage() {
+    const { gatewayStarting, gatewayLifecycleText } = getChatGatewayUiState();
     return (
       <Chat
         isVisible={currentPage === "chat"}
@@ -2490,24 +2588,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
         integrationsSyncing={integrationsSyncing}
         integrationsMissing={integrationsMissing}
         onNavigate={setCurrentPage}
-        onSessionsChange={(sessions, currentKey) => {
-          setChatSessions((prev) => {
-            // Guard against transient empty snapshots while chat state is still rehydrating.
-            if (sessions.length === 0 && prev.length > 0 && currentPage !== "chat") {
-              return prev;
-            }
-            return sessions;
-          });
-          setCurrentChatSession((prev) => currentKey ?? prev);
-          setPendingChatSession((pending) => {
-            if (!pending) return pending;
-            if (pending === "__new__") {
-              return currentKey ? null : pending;
-            }
-            return pending === currentKey ? null : pending;
-          });
-          setPendingChatAction(null);
-        }}
+        onSessionsChange={handleChatSessionsChange}
         requestedSession={pendingChatSession}
         requestedSessionAction={pendingChatAction}
       />
@@ -2634,6 +2715,8 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
     }
   }
 
+  const companionGatewayUi = getChatGatewayUiState();
+
   return (
     <Layout
       currentPage={currentPage}
@@ -2661,6 +2744,48 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
         setCurrentPage("chat");
       }}
     >
+      <button
+        data-companion-trigger
+        type="button"
+        onClick={() => void toggleCompanionSurface()}
+        className="absolute right-4 bottom-4 z-30 flex h-11 w-11 items-center justify-center rounded-xl border shadow-lg transition-transform hover:scale-105"
+        style={{
+          background: "var(--bg-card)",
+          borderColor: "var(--border-subtle)",
+          color: "var(--purple-accent)",
+          boxShadow: "0 14px 34px rgba(0,0,0,0.22)",
+        }}
+        title="Open Companion"
+        aria-label="Open Companion"
+      >
+        <Sparkles className="h-5 w-5" />
+      </button>
+      <CompanionPanel
+        open={companionOpen}
+        onOpenChange={setCompanionOpen}
+        gatewayRunning={gatewayRunning}
+        gatewayStarting={companionGatewayUi.gatewayStarting}
+        gatewayRetryIn={gatewayRetryIn}
+        gatewayLifecycleLabel={companionGatewayUi.gatewayLifecycleText}
+        onGatewayConnectionReady={handleGatewayConnectionReady}
+        onStartGateway={startGatewayFromChat}
+        onRecoverProxyAuth={recoverProxyAuthFromChat}
+        useLocalKeys={useLocalKeys}
+        selectedModel={selectedModel}
+        onModelChange={handleModelChange}
+        imageModel={imageModel}
+        imageGenerationModel={imageGenerationModel}
+        textToSpeechModel={textToSpeechModel}
+        audioUnderstandingModel={audioUnderstandingModel}
+        voiceSpeechRate={voiceSpeechRate}
+        voiceSpeechVoice={voiceSpeechVoice}
+        integrationsSyncing={integrationsSyncing}
+        integrationsMissing={integrationsMissing}
+        onNavigate={setCurrentPage}
+        onSessionsChange={handleChatSessionsChange}
+        requestedSession={pendingChatSession ?? currentChatSession}
+        requestedSessionAction={pendingChatAction}
+      />
       {providerSwitchConfirm && (
         <div className="absolute inset-0 z-50 flex items-center justify-center">
           <div className="w-full max-w-sm mx-4 rounded-2xl bg-[var(--bg-card)] border border-[var(--border-subtle)] shadow-xl p-6">

@@ -155,6 +155,11 @@ import {
   voiceIdForSpeechProvider,
   type VoiceSpeechVoice,
 } from "../desktop/voice/voicePreferences";
+import {
+  buildCompanionContextPrompt,
+  getCompanionState,
+  runCompanionTool,
+} from "../lib/companion";
 
 type GatewayMutationResult = {
   plan: "noop" | "config_reload" | "container_restart" | "container_recreate";
@@ -1757,6 +1762,39 @@ function parseGmailIntent(raw: string): boolean {
   return mentionsGmail || mentionsInbox || mentionsComposioGmail || mentionsGenericMail;
 }
 
+type CompanionSlashCommand = {
+  toolId: "get_focus_context" | "get_selection" | "create_frame";
+  input: Record<string, unknown>;
+};
+
+function parseCompanionSlashCommand(raw: string): CompanionSlashCommand | null {
+  const match = raw.trim().match(/^\/companion(?:\s+([\s\S]*))?$/i);
+  if (!match) return null;
+
+  const rest = (match[1] || "").trim();
+  if (!rest || /^(?:inspect|selection|get_selection)$/i.test(rest)) {
+    return { toolId: "get_selection", input: {} };
+  }
+  if (/^(?:focus|context|get_focus_context)$/i.test(rest)) {
+    return { toolId: "get_focus_context", input: {} };
+  }
+
+  const createFrameMatch = rest.match(/^(?:create[-_\s]?frame|frame)(?:\s+([\s\S]+))?$/i);
+  if (createFrameMatch) {
+    const name = (createFrameMatch[1] || "").trim();
+    return {
+      toolId: "create_frame",
+      input: {
+        name: name || "Entropic Companion Frame",
+        width: 720,
+        height: 480,
+      },
+    };
+  }
+
+  return { toolId: "get_selection", input: {} };
+}
+
 export function Chat({
   isVisible,
   gatewayRunning,
@@ -1782,6 +1820,8 @@ export function Chat({
   requestedSession,
   requestedSessionAction,
   wideLayout = false,
+  companionContext = null,
+  getCompanionContext,
 }: {
   isVisible?: boolean;
   gatewayRunning: boolean;
@@ -1807,6 +1847,8 @@ export function Chat({
   requestedSession?: string | null;
   requestedSessionAction?: ChatSessionActionRequest | null;
   wideLayout?: boolean;
+  companionContext?: string | null;
+  getCompanionContext?: () => Promise<string | null>;
 }) {
   const { isAuthenticated, isAuthConfigured, refreshBalance } = useAuth();
   const [localCreditsCents, setLocalCreditsCents] = useState<number | null>(null);
@@ -5509,6 +5551,7 @@ export function Chat({
         : `Attached file context: ${attachmentNames.join(", ")}`
       : messageContent;
     const runCommand = parseRunSlashCommand(messageContent);
+    const companionCommand = parseCompanionSlashCommand(messageContent);
     if (runCommand !== null) {
       if (hasAttachments) {
         const message = "Attachments are not supported with `/run`.";
@@ -5595,6 +5638,95 @@ export function Chat({
             },
           },
           sendSession
+        );
+      } finally {
+        setIsLoading(false);
+        setThinkingStatus(null);
+      }
+      return;
+    }
+
+    if (companionCommand) {
+      if (hasAttachments) {
+        const message = "Attachments are not supported with `/companion`.";
+        setError(message);
+        appendAssistantNotice(message, sendSession);
+        return;
+      }
+
+      const userMessage: Message = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: userMessageContent,
+        sentAt: Date.now(),
+      };
+      appendLocalMessage(userMessage, sendSession);
+
+      if (!content && sendSession) {
+        setDraftsBySession((prev) => ({ ...prev, [sendSession]: "" }));
+        if (textareaRef.current) {
+          textareaRef.current.style.height = "auto";
+          textareaRef.current.style.overflowY = "hidden";
+        }
+      }
+
+      setIsLoading(true);
+      setThinkingStatus("Running Companion tool");
+      setError(null);
+
+      try {
+        const state = await getCompanionState();
+        const skill = state.primarySkill;
+        if (!skill) {
+          throw new Error("Focus a supported app before running a Companion tool.");
+        }
+        if (!skill.granted) {
+          throw new Error(`Enable the ${skill.name} Companion skill before using its tools.`);
+        }
+        if (skill.status !== "ready") {
+          throw new Error(skill.statusReason || `${skill.name} is not ready.`);
+        }
+        if (!skill.tools.some((tool) => tool.id === companionCommand.toolId)) {
+          throw new Error(`${skill.name} does not expose ${companionCommand.toolId}.`);
+        }
+
+        const result = await runCompanionTool(
+          skill.id,
+          companionCommand.toolId,
+          companionCommand.input,
+        );
+        const context = buildCompanionContextPrompt(state, result.output);
+        appendLocalMessage(
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: [
+              result.summary,
+              "",
+              "```json",
+              JSON.stringify(result.output, null, 2),
+              "```",
+              context ? `\n${context}` : "",
+            ].join("\n"),
+            kind: "toolResult",
+            toolName: `Companion ${skill.name}.${companionCommand.toolId}`,
+            sentAt: Date.now(),
+          },
+          sendSession,
+        );
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Failed to run Companion tool.";
+        setError(message);
+        appendLocalMessage(
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: message,
+            kind: "toolResult",
+            toolName: `Companion ${companionCommand.toolId}`,
+            sentAt: Date.now(),
+          },
+          sendSession,
         );
       } finally {
         setIsLoading(false);
@@ -5904,6 +6036,34 @@ export function Chat({
         `Original user request: ${messageContent.trim()}`,
       ].join("\n");
       addDiag("gmail intent detected; routing via Gmail integration");
+    }
+
+    let activeCompanionContext = companionContext;
+    if (
+      getCompanionContext &&
+      composerMode === "chat" &&
+      !messageContent.startsWith(INTERNAL_USER_PROMPT_PREFIX)
+    ) {
+      try {
+        activeCompanionContext = await getCompanionContext();
+        addDiag("companion context refreshed before chat turn");
+      } catch (error) {
+        addDiag(`companion context refresh failed: ${String(error)}`);
+      }
+    }
+
+    if (
+      activeCompanionContext?.trim() &&
+      composerMode === "chat" &&
+      !messageContent.startsWith(INTERNAL_USER_PROMPT_PREFIX)
+    ) {
+      outboundMessageContent = [
+        activeCompanionContext.trim(),
+        "",
+        "User request:",
+        outboundMessageContent,
+      ].join("\n");
+      addDiag("companion context attached to chat turn");
     }
 
     const pendingSend: PersistedPendingSend = {
